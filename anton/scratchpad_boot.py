@@ -172,7 +172,21 @@ if _scratchpad_model:
     except Exception:
         pass  # LLM not available — not fatal (e.g. anthropic not installed)
 
+# Read-execute loop
+_real_stdout = sys.stdout
+_real_stdin = sys.stdin
+
+_PROGRESS_MARKER = "__ANTON_PROGRESS__"
+
+def progress(message=""):
+    """Signal that long-running work is still active. Resets the inactivity timer."""
+    _real_stdout.write(_PROGRESS_MARKER + " " + str(message) + "\n")
+    _real_stdout.flush()
+
+namespace["progress"] = progress
+
 # --- Inject minds_client when a Mind is connected ---
+# NOTE: Must come after progress() is defined since MindsQueryClient uses it.
 _minds_connection_raw = os.environ.get("MINDS_CONNECTION", "")
 if _minds_connection_raw:
     try:
@@ -196,19 +210,6 @@ if _minds_connection_raw:
         sys.stderr.write(f"[scratchpad] minds_client init failed: {_minds_exc}\n")
         sys.stderr.write(_tb.format_exc() + "\n")
         sys.stderr.flush()
-
-# Read-execute loop
-_real_stdout = sys.stdout
-_real_stdin = sys.stdin
-
-_PROGRESS_MARKER = "__ANTON_PROGRESS__"
-
-def progress(message=""):
-    """Signal that long-running work is still active. Resets the inactivity timer."""
-    _real_stdout.write(_PROGRESS_MARKER + " " + str(message) + "\n")
-    _real_stdout.flush()
-
-namespace["progress"] = progress
 
 # --- Variable inspector ---
 
