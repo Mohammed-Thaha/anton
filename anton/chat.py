@@ -538,6 +538,139 @@ async def _handle_setup(
     )
 
 
+async def _handle_connect(
+    console: Console,
+    workspace: Workspace,
+) -> None:
+    """Interactive wizard to connect Anton to a MindsDB instance."""
+    import json
+
+    import httpx
+    from rich.prompt import Prompt
+
+    console.print()
+    console.print("[anton.cyan]Connect to MindsDB[/]")
+    console.print()
+
+    # 1. URL
+    url = Prompt.ask(
+        "MindsDB URL",
+        default="https://mdb.ai",
+        console=console,
+    ).strip().rstrip("/")
+
+    # 2. API key
+    api_key = Prompt.ask(
+        "API key",
+        password=True,
+        console=console,
+    ).strip()
+
+    if not api_key:
+        console.print("[anton.error]No API key provided. Aborting.[/]")
+        console.print()
+        return
+
+    # 3. Test connection and fetch Minds
+    console.print()
+    console.print("[anton.muted]Testing connection...[/]")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{url}/api/v1/minds",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            minds = resp.json()
+    except Exception as exc:
+        console.print(f"[anton.error]Connection failed: {exc}[/]")
+        console.print()
+        return
+
+    if not minds:
+        console.print("[anton.error]No Minds found on this server.[/]")
+        console.print()
+        return
+
+    console.print(f"[anton.success]Connected! Found {len(minds)} Mind(s).[/]")
+    console.print()
+
+    # 4. Pick a Mind
+    console.print("[anton.cyan]Available Minds:[/]")
+    for i, mind in enumerate(minds, 1):
+        name = mind.get("name", f"mind-{i}")
+        console.print(f"  [bold]{i}[/]  {name}")
+    console.print()
+
+    choices = [str(i) for i in range(1, len(minds) + 1)]
+    mind_choice = Prompt.ask(
+        "Select Mind",
+        choices=choices,
+        default="1",
+        console=console,
+    )
+    selected_mind = minds[int(mind_choice) - 1]
+    mind_name = selected_mind.get("name", "")
+    model_name = selected_mind.get("model_name", "")
+    provider = selected_mind.get("provider", "mindsdb")
+
+    # 5. Pick a datasource from the selected Mind
+    datasources = selected_mind.get("datasources", [])
+    datasource = ""
+    if datasources:
+        console.print()
+        console.print("[anton.cyan]Available datasources:[/]")
+        for i, ds in enumerate(datasources, 1):
+            console.print(f"  [bold]{i}[/]  {ds}")
+        console.print()
+
+        ds_choices = [str(i) for i in range(1, len(datasources) + 1)]
+        ds_choice = Prompt.ask(
+            "Select datasource",
+            choices=ds_choices,
+            default="1",
+            console=console,
+        )
+        datasource = datasources[int(ds_choice) - 1]
+    else:
+        console.print("[anton.muted]No datasources configured for this Mind.[/]")
+
+    # 6. Store connection info
+    connection = json.dumps({
+        "url": url,
+        "api_key": api_key,
+        "mind_name": mind_name,
+        "datasource": datasource,
+        "model_name": model_name,
+        "provider": provider,
+    })
+    workspace.set_secret("MINDS_CONNECTION", connection)
+    workspace.set_secret("MINDS_API_KEY", api_key)
+
+    console.print()
+    console.print(f"[anton.success]Connected to Mind '{mind_name}'.[/]")
+    if datasource:
+        console.print(f"[anton.muted]Datasource: {datasource}[/]")
+    console.print()
+
+
+async def _handle_disconnect(
+    console: Console,
+    workspace: Workspace,
+) -> None:
+    """Remove stored MindsDB connection."""
+    removed_conn = workspace.remove_secret("MINDS_CONNECTION")
+    removed_key = workspace.remove_secret("MINDS_API_KEY")
+
+    console.print()
+    if removed_conn or removed_key:
+        console.print("[anton.success]MindsDB connection removed.[/]")
+    else:
+        console.print("[anton.muted]No MindsDB connection found.[/]")
+    console.print()
+
+
 def _format_file_message(text: str, paths: list[Path], console: Console) -> str:
     """Rewrite user input to include file contents for detected paths."""
     parts: list[str] = []
@@ -688,10 +821,12 @@ def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/setup[/]    — Configure provider, model, and API key")
-    console.print("  [bold]/paste[/]    — Attach clipboard image to your message")
-    console.print("  [bold]/help[/]     — Show this help message")
-    console.print("  [bold]exit[/]                  — Quit the chat")
+    console.print("  [bold]/setup[/]       — Configure provider, model, and API key")
+    console.print("  [bold]/connect[/]     — Connect to MindsDB (mdb.ai)")
+    console.print("  [bold]/disconnect[/]  — Remove MindsDB connection")
+    console.print("  [bold]/paste[/]       — Attach clipboard image to your message")
+    console.print("  [bold]/help[/]        — Show this help message")
+    console.print("  [bold]exit[/]                     — Quit the chat")
     console.print()
 
 
@@ -818,6 +953,12 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         console, settings, workspace, state,
                         self_awareness, session,
                     )
+                    continue
+                elif cmd == "/connect":
+                    await _handle_connect(console, workspace)
+                    continue
+                elif cmd == "/disconnect":
+                    await _handle_disconnect(console, workspace)
                     continue
                 elif cmd == "/help":
                     _print_slash_help(console)

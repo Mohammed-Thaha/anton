@@ -165,3 +165,34 @@ class TestSecretVault:
         )
         env = ws.load_env()
         assert env == {"KEY": "value"}
+
+    def test_remove_secret_existing(self, ws, tmp_path):
+        ws.initialize()
+        ws.set_secret("MY_KEY", "my_value")
+        assert ws.has_secret("MY_KEY") is True
+        result = ws.remove_secret("MY_KEY")
+        assert result is True
+        assert ws.has_secret("MY_KEY") is False
+
+    def test_remove_secret_missing(self, ws, tmp_path):
+        ws.initialize()
+        result = ws.remove_secret("NONEXISTENT")
+        assert result is False
+
+    def test_remove_secret_no_env_file(self, ws):
+        result = ws.remove_secret("ANYTHING")
+        assert result is False
+
+    def test_remove_secret_preserves_others(self, ws, tmp_path):
+        ws.initialize()
+        ws.set_secret("KEEP", "yes")
+        ws.set_secret("DROP", "no")
+        ws.remove_secret("DROP")
+        assert ws.get_secret("KEEP") == "yes"
+        assert ws.has_secret("DROP") is False
+
+    def test_remove_secret_pops_environ(self, ws, tmp_path):
+        ws.set_secret("ANTON_TEST_REMOVE_XYZ", "val")
+        assert os.environ.get("ANTON_TEST_REMOVE_XYZ") == "val"
+        ws.remove_secret("ANTON_TEST_REMOVE_XYZ")
+        assert os.environ.get("ANTON_TEST_REMOVE_XYZ") is None

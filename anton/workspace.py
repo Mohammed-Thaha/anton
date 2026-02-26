@@ -187,6 +187,31 @@ class Workspace:
         # Also set in current process environment
         os.environ[key] = value
 
+    def remove_secret(self, key: str) -> bool:
+        """Remove a secret from .anton/.env.
+
+        Returns True if the key was found and removed, False otherwise.
+        """
+        if not self._env_file.is_file():
+            return False
+
+        lines: list[str] = []
+        found = False
+        for line in self._env_file.read_text().splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                existing_key = stripped.partition("=")[0].strip()
+                if existing_key == key:
+                    found = True
+                    continue
+            lines.append(line)
+
+        if found:
+            self._env_file.write_text("\n".join(lines) + "\n")
+            os.environ.pop(key, None)
+
+        return found
+
     def apply_env_to_process(self) -> int:
         """Load .anton/.env variables into os.environ. Returns count loaded."""
         env = self.load_env()
