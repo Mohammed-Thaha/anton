@@ -434,16 +434,25 @@ _logging.root.setLevel(_logging.INFO)
 
 while True:
     lines = []
+    eof = False
     try:
-        for line in _real_stdin:
+        # Use explicit readline() instead of iterating stdin.  On Windows,
+        # Python's file iterator over a pipe uses internal block buffering
+        # (~8 KB) and won't yield lines until the buffer fills or the pipe
+        # closes — causing a deadlock.  readline() returns immediately on \n.
+        while True:
+            line = _real_stdin.readline()
+            if not line:
+                # EOF — parent closed stdin
+                eof = True
+                break
             stripped = line.rstrip("\n")
             if stripped == _CELL_DELIM:
                 break
             lines.append(line)
-        else:
-            # EOF — parent closed stdin
-            break
     except EOFError:
+        eof = True
+    if eof:
         break
 
     code = "".join(lines)

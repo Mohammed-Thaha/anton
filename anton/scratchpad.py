@@ -118,16 +118,22 @@ class Scratchpad:
     @staticmethod
     def _find_uv() -> str | None:
         """Return the path to the ``uv`` binary, or *None* if unavailable."""
-        import subprocess as _sp
         # Fast path: already on PATH
         uv = shutil.which("uv")
         if uv:
             return uv
         # Common install locations
-        for candidate in (
-            os.path.expanduser("~/.local/bin/uv"),
-            os.path.expanduser("~/.cargo/bin/uv"),
-        ):
+        if sys.platform == "win32":
+            candidates = (
+                os.path.expanduser("~/.local/bin/uv.exe"),
+                os.path.expanduser("~/.cargo/bin/uv.exe"),
+            )
+        else:
+            candidates = (
+                os.path.expanduser("~/.local/bin/uv"),
+                os.path.expanduser("~/.cargo/bin/uv"),
+            )
+        for candidate in candidates:
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
         return None
@@ -164,6 +170,7 @@ class Scratchpad:
         if sys.platform == "win32":
             bin_dir = os.path.join(self._venv_dir, "Scripts")
             self._venv_python = os.path.join(bin_dir, "python.exe")
+            self._add_windows_firewall_rule()
         else:
             bin_dir = os.path.join(self._venv_dir, "bin")
             self._venv_python = os.path.join(bin_dir, "python")
@@ -195,6 +202,30 @@ class Scratchpad:
                 pass
         self._venv_dir = None
         self._venv_python = None
+
+    def _add_windows_firewall_rule(self) -> None:
+        """Add a Windows Firewall outbound-allow rule for this venv's python.exe.
+
+        Windows Firewall blocks new executables by default.  Without a rule,
+        scratchpad HTTP calls (httpx, requests, etc.) silently time out.
+        Runs silently — failures are ignored (user can add rules manually).
+        """
+        if self._venv_python is None or not os.path.isfile(self._venv_python):
+            return
+        import subprocess as _sp
+        rule_name = f"Anton Scratchpad - {self.name}"
+        try:
+            _sp.run(
+                [
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={rule_name}", "dir=out", "action=allow",
+                    f"program={self._venv_python}",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
         self._installed_packages.clear()
 
     def _setup_parent_site_packages(self) -> None:

@@ -997,9 +997,11 @@ class _EscapeWatcher:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # Drain any leftover bytes (e.g. partial CPR responses) so they
-        # don't leak into the next prompt_toolkit input session.
-        self._drain_stdin()
+            # Drain any leftover bytes (e.g. partial CPR responses) so they
+            # don't leak into the next prompt_toolkit input session.
+            # Only needed on Unix where _watch() was running (fcntl/termios
+            # are not available on Windows).
+            self._drain_stdin()
 
     @staticmethod
     def _drain_stdin() -> None:
