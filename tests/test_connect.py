@@ -64,19 +64,30 @@ class TestHandleConnect:
             },
         ]
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = minds_response
+        # Mind details response (for the allow_direct_queries check)
+        mind_details_response = MagicMock()
+        mind_details_response.raise_for_status = MagicMock()
+        mind_details_response.json.return_value = {
+            "name": "my_mind",
+            "model_name": "gpt-4",
+            "provider": "openai",
+            "parameters": {"allow_direct_queries": True},
+            "datasources": [{"name": "my_db"}],
+        }
+
+        mock_list_response = MagicMock()
+        mock_list_response.raise_for_status = MagicMock()
+        mock_list_response.json.return_value = minds_response
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.get = AsyncMock(side_effect=[mock_list_response, mind_details_response])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client), \
              patch("rich.prompt.Prompt") as mock_prompt_cls:
             mock_prompt_cls.ask = MagicMock(
-                side_effect=["https://mdb.ai", "test-key", "1", "1"]
+                side_effect=["https://mdb.ai", "test-key", "1"]
             )
             await _handle_connect(console, workspace)
 
@@ -89,7 +100,6 @@ class TestHandleConnect:
         conn = json.loads(conn_raw)
         assert conn["url"] == "https://mdb.ai"
         assert conn["mind_name"] == "my_mind"
-        assert conn["datasource"] == "my_db"
         assert conn["model_name"] == "gpt-4"
         assert conn["provider"] == "openai"
 
@@ -166,19 +176,29 @@ class TestHandleConnect:
             },
         ]
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = minds_response
+        mind_details_response = MagicMock()
+        mind_details_response.raise_for_status = MagicMock()
+        mind_details_response.json.return_value = {
+            "name": "test_mind",
+            "model_name": "gpt-4",
+            "provider": "openai",
+            "parameters": {"allow_direct_queries": True},
+            "datasources": [{"name": "ds1"}],
+        }
+
+        mock_list_response = MagicMock()
+        mock_list_response.raise_for_status = MagicMock()
+        mock_list_response.json.return_value = minds_response
 
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.get = AsyncMock(side_effect=[mock_list_response, mind_details_response])
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client), \
              patch("rich.prompt.Prompt") as mock_prompt_cls:
             mock_prompt_cls.ask = MagicMock(
-                side_effect=["terbase.dev.mdb.ai", "test-key", "1", "1"]
+                side_effect=["terbase.dev.mdb.ai", "test-key", "1"]
             )
             await _handle_connect(console, workspace)
 
@@ -187,8 +207,6 @@ class TestHandleConnect:
         conn = json.loads(conn_raw)
         assert conn["url"] == "https://terbase.dev.mdb.ai"
 
-        # Verify the GET was called with the https:// prefixed URL
-        mock_client.get.assert_called_once_with(
-            "https://terbase.dev.mdb.ai/api/v1/minds/",
-            headers={"Authorization": "Bearer test-key"},
-        )
+        # Verify the first GET was called with the https:// prefixed URL
+        first_call = mock_client.get.call_args_list[0]
+        assert first_call.args[0] == "https://terbase.dev.mdb.ai/api/v1/minds/"

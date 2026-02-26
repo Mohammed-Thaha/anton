@@ -88,8 +88,43 @@ class ChatSession:
     def history(self) -> list[dict]:
         return self._history
 
+    def _build_minds_context(self) -> str:
+        """Build the minds_context block for the system prompt."""
+        if self._workspace is None:
+            return ""
+        raw = self._workspace.get_secret("MINDS_CONNECTION")
+        if not raw:
+            return ""
+        try:
+            import json
+            conn = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        mind_name = conn.get("mind_name", "")
+        if not mind_name:
+            return ""
+        return (
+            "\n\nMINDSDB DATA ACCESS:\n"
+            f"- You are connected to Mind '{mind_name}'.\n"
+            "- The scratchpad has a pre-loaded `minds_client` object (MindsQueryClient) with:\n"
+            "  - minds_client.get_data_catalog() — returns a dict of all datasources, tables, "
+            "and columns available to this Mind. Call this first to discover what data is available.\n"
+            "  - minds_client.run_native_query_df(native_query, datasource_name) — runs a native "
+            "SQL query against a datasource and returns a pandas DataFrame.\n"
+            "- Example usage in scratchpad:\n"
+            "    catalog = minds_client.get_data_catalog()\n"
+            "    sample(catalog)\n"
+            "    df = minds_client.run_native_query_df('SELECT * FROM users LIMIT 10', 'my_postgres')\n"
+            "    sample(df)\n"
+            "- Always start by exploring the catalog to understand available data before querying."
+        )
+
     def _build_system_prompt(self) -> str:
-        prompt = CHAT_SYSTEM_PROMPT.format(runtime_context=self._runtime_context)
+        minds_context = self._build_minds_context()
+        prompt = CHAT_SYSTEM_PROMPT.format(
+            runtime_context=self._runtime_context,
+            minds_context=minds_context,
+        )
         if self._self_awareness is not None:
             sa_section = self._self_awareness.build_prompt_section()
             if sa_section:
@@ -130,6 +165,14 @@ class ChatSession:
             else:
                 extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
             scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
+
+        # Enrich scratchpad description when a Mind is connected
+        if self._workspace is not None and self._workspace.get_secret("MINDS_CONNECTION"):
+            scratchpad_tool["description"] += (
+                "\n\nMindsDB Mind connected — `minds_client` is pre-loaded in the namespace. "
+                "Use minds_client.get_data_catalog() to discover datasources/tables/columns, "
+                "and minds_client.run_native_query_df(query, datasource) to query data as DataFrames."
+            )
 
         tools = [scratchpad_tool]
         if self._self_awareness is not None:
@@ -635,33 +678,48 @@ async def _handle_connect(
     model_name = selected_mind.get("model_name", "")
     provider = selected_mind.get("provider", "mindsdb")
 
-    # 5. Pick a datasource from the selected Mind
-    datasources = selected_mind.get("datasources", [])
-    datasource = ""
-    if datasources:
-        console.print()
-        console.print("[anton.cyan]Available datasources:[/]")
-        for i, ds in enumerate(datasources, 1):
-            console.print(f"  [bold]{i}[/]  {ds}")
-        console.print()
-
-        ds_choices = [str(i) for i in range(1, len(datasources) + 1)]
-        ds_choice = Prompt.ask(
-            "Select datasource",
-            choices=ds_choices,
-            default="1",
-            console=console,
-        )
-        datasource = datasources[int(ds_choice) - 1]
-    else:
-        console.print("[anton.muted]No datasources configured for this Mind.[/]")
+    # 5. Ensure allow_direct_queries is enabled on the Mind
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            headers = {"Authorization": f"Bearer {api_key}"}
+            mind_resp = await client.get(
+                f"{url}/api/v1/minds/{mind_name}",
+                headers=headers,
+            )
+            mind_resp.raise_for_status()
+            mind_details = mind_resp.json()
+            params = mind_details.get("parameters") or {}
+            if not params.get("allow_direct_queries"):
+                params["allow_direct_queries"] = True
+                update_body = {"parameters": params}
+                # Preserve name and model_name so they aren't erased
+                if mind_details.get("model_name"):
+                    update_body["model_name"] = mind_details["model_name"]
+                if mind_details.get("provider"):
+                    update_body["provider"] = mind_details["provider"]
+                # Preserve datasources list (API expects {"name": ...} objects)
+                ds_list = mind_details.get("datasources")
+                if ds_list:
+                    update_body["datasources"] = [
+                        {"name": d["name"]} if isinstance(d, dict) else {"name": d}
+                        for d in ds_list
+                        if (d.get("name") if isinstance(d, dict) else d)
+                    ]
+                put_resp = await client.put(
+                    f"{url}/api/v1/minds/{mind_name}",
+                    headers=headers,
+                    json=update_body,
+                )
+                put_resp.raise_for_status()
+                console.print("[anton.muted]Enabled direct queries on Mind.[/]")
+    except Exception as exc:
+        console.print(f"[anton.warning]Could not enable direct queries: {exc}[/]")
 
     # 6. Store connection info
     connection = json.dumps({
         "url": url,
         "api_key": api_key,
         "mind_name": mind_name,
-        "datasource": datasource,
         "model_name": model_name,
         "provider": provider,
     })
@@ -670,8 +728,6 @@ async def _handle_connect(
 
     console.print()
     console.print(f"[anton.success]Connected to Mind '{mind_name}'.[/]")
-    if datasource:
-        console.print(f"[anton.muted]Datasource: {datasource}[/]")
     console.print()
 
 
