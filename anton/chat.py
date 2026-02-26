@@ -580,9 +580,9 @@ async def _handle_connect(
     console.print("[anton.muted]Testing connection...[/]")
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(
-                f"{url}/api/v1/minds",
+                f"{url}/api/v1/minds/",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
             resp.raise_for_status()

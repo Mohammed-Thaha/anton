@@ -189,6 +189,6 @@ class TestHandleConnect:
 
         # Verify the GET was called with the https:// prefixed URL
         mock_client.get.assert_called_once_with(
-            "https://terbase.dev.mdb.ai/api/v1/minds",
+            "https://terbase.dev.mdb.ai/api/v1/minds/",
             headers={"Authorization": "Bearer test-key"},
         )
