@@ -21,7 +21,7 @@ class MindsQueryClient:
     mindsserver_url: str
     api_key: str
     mind_name: str
-    timeout_s: float = 60.0
+    timeout_s: float = 180.0
     verify_ssl: bool = True
     progress_fn: Callable[..., object] | None = field(default=None, repr=False)
 
@@ -206,6 +206,8 @@ class MindsQueryClient:
 
     def _run_query_df(self, sql: str):
         """Execute a SQL string via the Mind and return a DataFrame."""
+        import threading
+        import time
         from io import StringIO
         import pandas as pd
 
@@ -215,17 +217,36 @@ class MindsQueryClient:
             if self.progress_fn:
                 self.progress_fn("submitting query...")
 
-            r = client.post(
-                "/api/v1/responses/",
-                json={
-                    "model": self.mind_name,
-                    "input": sql,
-                    "conversation": conv_id,
-                    "stream": False,
-                },
-            )
+            # The Mind API can take 10-30s+. Run a background heartbeat
+            # so the caller sees progress while we block on the POST.
+            done = threading.Event()
+            if self.progress_fn:
+                def _heartbeat():
+                    start = time.monotonic()
+                    while not done.wait(2.0):
+                        elapsed = int(time.monotonic() - start)
+                        self.progress_fn(f"waiting for query results... {elapsed}s")  # type: ignore[misc]
+                t = threading.Thread(target=_heartbeat, daemon=True)
+                t.start()
+
+            try:
+                r = client.post(
+                    "/api/v1/responses/",
+                    json={
+                        "model": self.mind_name,
+                        "input": sql,
+                        "conversation": conv_id,
+                        "stream": False,
+                    },
+                )
+            finally:
+                done.set()
+
             r.raise_for_status()
             resp = r.json()
+
+            if self.progress_fn:
+                self.progress_fn("parsing results...")
 
             # Try structured query_result first
             output_items = resp.get("output") or []
