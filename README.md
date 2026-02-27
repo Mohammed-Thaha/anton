@@ -151,4 +151,4 @@ We really enjoyed the show *Silicon Valley*. Gilfoyle's AI — Son of Anton — 
 
 ## License
 
-GNU AFFERO GENERAL PUBLIC LICENSE
+AGPL-3.0 license
