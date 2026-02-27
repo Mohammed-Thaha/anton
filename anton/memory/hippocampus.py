@@ -366,7 +366,7 @@ class Hippocampus:
                     if sys.platform != "win32":
                         import fcntl
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            tmp_path.rename(path)
+            tmp_path.replace(path)
         else:
             # Append mode
             with open(path, "a", encoding="utf-8") as f:
