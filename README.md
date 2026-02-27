@@ -10,7 +10,7 @@
 ```
 
 
-Anton is an advanced AI coworker. You tell it what you need done and it figures out the rest. 
+Anton is an advanced AI coworker. You tell it what you need done and it figures out the rest.
 
 ## Quick start
 
@@ -60,7 +60,7 @@ information and scrape the web as needed, assuming no API keys are available.
 Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs, operating as follows.
 
 
-**Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer. 
+**Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer.
 
 ```
 Task → Memory Recall → Planning → Scratchpad Building (if needed) → Execution
@@ -68,7 +68,7 @@ Task → Memory Recall → Planning → Scratchpad Building (if needed) → Exec
 
 ### What is a Scratchpad?
 
-Anton's scratchpads are notebook-style environments it drives programmatically. 
+Anton's scratchpads are notebook-style environments it drives programmatically.
 
 When you ask Anton for something, it writes and executes Python in the scratchpad. This makes Anton particularly great at **data analysis tasks**: counting, scraping, parsing, transforming, aggregating, calling API's and exploring datasets with real computation instead of LLM guesswork.
 
@@ -83,9 +83,21 @@ What the scratchpad handles well:
 
 You can always ask Anton to explain what it did. Ask it to dump its scratchpad and you get a full notebook-style breakdown: every cell of code it ran, the outputs, and errors — so you can follow its reasoning step by step.
 
+---
+
+## Memory System
+
+Anton has a brain-inspired long-term memory architecture that learns from every session. It remembers your identity, behavioral rules (always/never/when), semantic lessons, and domain expertise — stored as human-readable markdown at two scopes (global and per-project). After scratchpad sessions, it automatically extracts lessons from errors and long runs, like hippocampal replay during sleep.
+
+Configure the encoding mode via `/setup` or `ANTON_MEMORY_MODE` (autopilot / copilot / manual / off). Default: **copilot** — auto-saves high-confidence memories, confirms ambiguous ones.
+
+For the full architecture, brain-to-code mapping, file formats, and developer guide, see **[anton/README.md](anton/README.md)**.
+
+---
+
 ## Workspace
 
-When you run `anton` in a directory, it checks for an `.anto` folder. If the folder exists but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
+When you run `anton` in a directory, it checks for an `.anton` folder. If the folder exists but no `anton.md`, Anton asks before setting up — it won't touch your stuff without permission.
 
 **.anton/anton.md** — Write anything here. Project context, conventions, preferences. Anton reads it at the start of every conversation.
 
@@ -100,7 +112,8 @@ All data lives in `.anton/` in the current working directory. Override with `ant
 .anton/.env              # Workspace-local secrets and API keys
 ANTON_ANTHROPIC_API_KEY  # Anthropic API key
 ANTON_PLANNING_MODEL     # Model for planning (default: claude-sonnet-4-6)
-ANTON_CODING_MODEL       # Model for coding (default: claude-opus-4-6)
+ANTON_CODING_MODEL       # Model for coding (default: claude-haiku-4-5-20251001)
+ANTON_MEMORY_MODE        # Memory encoding mode (default: copilot)
 ```
 
 Env loading order: `cwd/.env` → `.anton/.env` → `~/.anton/.env`
@@ -136,7 +149,7 @@ netsh advfirewall firewall add rule name="Anton Scratchpad" dir=out action=allow
 
 ## How is Anton different from Claude Code / Codex?
 
-Anton is a *doing* tool not a coding tool. Tools like Claude-Code exist for your codebase — they read your repo, edit your files etc. The code they write *is* the focus. 
+Anton is a *doing* tool not a coding tool. Tools like Claude-Code exist for your codebase — they read your repo, edit your files etc. The code they write *is* the focus.
 Anton on the other hand, doesn't care or needs a coding repo. Yes, it writes code too, but that code is a means to an end, which is why we introduced the scratchpad logic, so Anton can fetch a page, parse a table, plot a chart, call an API, crunch some numbers, ... whatever it needs to solve a problem. The output is the answer, not the source file.
 
 If you're coding a commercial app, use a coding agent. If you need something *done* — a dataset analyzed, a report generated, a workflow automated — talk to Anton.
