@@ -1,16 +1,90 @@
-# Anton Memory System
+# Inside Anton 
 
-Anton has a brain-inspired long-term memory architecture. Every module is named for the neural structure whose function it mirrors. This document is the complete developer reference.
+## Introduction 
 
-## The Big Picture
+I was reading the book `How to create a mind` by Ray Kurzweil, in 2015, a few years before we started MindsDB, at that time it became obvious that at some point in the near future; one could programatically create Mind mirroring the brain's building blocks, however, after trying I came to the conclusion that one foundamental block needed to evolve/happen, and `Anticipation Block architecture`, you can read more about this thought [here](https://torrmal.github.io/2015/12/29/anticipation-loop/).
+
+Well, turns out the world did build an architecture like that, which is what we know as transformers, and LLMs today (2026) are at a point where the ideas seeded in us by 'How to create a Mind' are very viable from an implementation point of view. So 11 years later this try two ;)
+
+## A mini Mind
+
+It is probably obvious now, but Anton has a brain-inspired architecture, and the more we build it the more it resembles/mirrors functional parts of the brain.  On the other hand we also understand that people don't need to know anything about the brain to play with Anton, so we mapped some of the places/files where users can have inputs, or investigate what's up, to names that make more sense than the scientific name of that function of the brain.
+
+The current implementation has three blocks:
+
+| Brain Region                 | Function                                         | Anton Equivalent                                              |
+|------------------------------|--------------------------------------------------|---------------------------------------------------------------|
+| Prefrontal Cortex (PFC)      | Executive control, planning, the "inner voice"  | Orchestrator — decides what to work on, how, and when to stop |
+| Working Memory (dlPFC)       | Temporary reasoning space, ~4 slots             | Scratchpads — isolated reasoning environments                 |
+| Hippocampus                  | Episodic memory, records experiences            | Experience Store — logs of problem + context + solution       |
+
+
+
+## Architecture of Anton
+
+These three parts work in a very simple way:
 
 ```
-                    ┌──────────────────────────────────────────────┐
+  ┌────────────────────────────────────────────────────┐
+  │              EXECUTIVE (the orchestrator)          │
+  │                                                    │
+  │  On new problem:                                   │
+  │    1. Check SKILL LIBRARY → match?                 │
+  │       YES → deploy skill's template scratchpad     │
+  │       NO  → open fresh scratchpad                  │
+  │    2. Monitor scratchpad progress                  │
+  │    3. Detect stuck/failure → pivot strategy        │
+  │    4. On success → record to experience store      │
+  └────────────┬───────────────────────────────────────┘
+               │ spawns & monitors
+               ▼
+  ┌──────────────────────────────────────────────────────┐
+  │              SCRATCHPADS (working memory)            │
+  │                                                      │
+  │  Each scratchpad is:                                 │
+  │  - An isolated reasoning environment (its own venv)  │
+  │  - A chain-of-thought trace (code + observations)    │
+  │  - Has a goal, constraints, and a budget             │
+  │  - Can request sub-scratchpads (decomposition)       │
+  │                                                      │
+  │  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
+  │  │ Scratch1 │  │ Scratch2 │  │ Scratch3 │            │
+  │  │ "parse   │  │ "query   │  │ "format  │            │
+  │  │  input"  │  │  API"    │  │  output" │            │
+  │  └────┬─────┘  └────┬─────┘  └────┬─────┘            │
+  │       │              │              │                │
+  │       ▼              ▼              ▼                │
+  │   [result]       [result]       [result]             │
+  └────────────────────┬─────────────────────────────────┘
+                       │ on success
+                       ▼
+  ┌──────────────────────────────────────────────────────┐
+  │         EXPERIENCE STORE (hippocampus)               │
+  │                                                      │
+  │  Each entry:                                         │
+  │  {                                                   │
+  │    problem_signature: "...",                         │
+  │    context: { what tools, what domain, what input }, │
+  │    scratchpad_trace: [ step1, step2, ... ],          │
+  │    outcome: success | failure,                       │
+  │    cost: tokens/time spent,                          │
+  │    salience: how important/novel was this            │
+  │  }                                                   │
+  │                                                      │
+  │  Searchable by similarity (embeddings)               │
+  └──────────────────────────────────────────────────────┘
+
+```
+
+And the Hipocampus also is controlled as follows:
+
+```
+                    ┌───────────────────────────────────────────────┐
                     │              CORTEX (cortex.py)               │
                     │     Prefrontal Cortex — Executive Control     │
                     │  Coordinates all memory systems, decides what │
                     │  to load into working memory (context window) │
-                    └────────┬──────────────┬──────────────┬───────┘
+                    └────────┬──────────────┬──────────────┬────────┘
                              │              │              │
                ┌─────────────┘       ┌──────┘              └──────┐
                ▼                     ▼                            ▼
