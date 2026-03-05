@@ -739,13 +739,14 @@ def _build_runtime_context(settings: AntonSettings) -> str:
         f"- Workspace: {settings.workspace_path}\n"
         f"- Memory mode: {settings.memory_mode}"
     )
-    if settings.minds_datasource and settings.minds_api_key:
-        engine = settings.minds_datasource_engine or "unknown"
+    _ds = getattr(settings, "minds_datasource", None)
+    _ds_key = getattr(settings, "minds_api_key", None)
+    if _ds and _ds_key:
+        engine = getattr(settings, "minds_datasource_engine", None) or "unknown"
         ctx += (
             f"\n\n**CONNECTED DATASOURCE (Minds):**\n"
-            f"- Datasource: {settings.minds_datasource}\n"
+            f"- Datasource: {_ds}\n"
             f"- Engine: {engine}\n"
-            f"- Minds URL: {settings.minds_url}\n"
             f"- To query data, use the scratchpad with the built-in `query_minds_data()` function.\n"
             f"  It is pre-loaded in the scratchpad namespace — DO NOT import it. Just call it directly.\n"
             f'  Example: result = query_minds_data("SELECT * FROM users LIMIT 5")\n'
@@ -1262,8 +1263,8 @@ async def _handle_setup_minds(
     console.print()
 
     # Ask for Minds API key and URL if not already configured
-    api_key = settings.minds_api_key or ""
-    minds_url = _normalize_minds_url(settings.minds_url)
+    api_key = getattr(settings, "minds_api_key", None) or ""
+    minds_url = _normalize_minds_url(getattr(settings, "minds_url", "https://mdb.ai"))
 
     if not api_key:
         api_key = Prompt.ask("Minds API key", console=console)
@@ -1281,7 +1282,7 @@ async def _handle_setup_minds(
     minds_url = _normalize_minds_url(minds_url_input)
 
     # --- Test connection ---
-    ssl_verify = settings.minds_ssl_verify
+    ssl_verify = getattr(settings, "minds_ssl_verify", True)
     console.print()
     console.print(f"[anton.muted]Connecting to {minds_url}...[/]")
 
