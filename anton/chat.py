@@ -824,35 +824,42 @@ def _handle_memory(
         console.print()
         return
 
-    # --- Project scope ---
-    project_hc = cortex.project_hc
-    p_identity = project_hc.recall_identity()
-    p_rules = project_hc.recall_rules()
-    p_lessons_raw = project_hc._read_full_lessons()
-    p_rule_count = sum(1 for ln in p_rules.splitlines() if ln.strip().startswith("- ")) if p_rules else 0
-    p_lesson_count = sum(1 for ln in p_lessons_raw.splitlines() if ln.strip().startswith("- ")) if p_lessons_raw else 0
-    p_topics: list[str] = []
-    if project_hc._topics_dir.is_dir():
-        p_topics = [p.stem for p in sorted(project_hc._topics_dir.iterdir()) if p.suffix == ".md"]
+    # --- Helper to display a hippocampus scope ---
+    def _show_scope(label: str, hc) -> int:
+        identity = hc.recall_identity()
+        rules = hc.recall_rules()
+        lessons_raw = hc._read_full_lessons()
+        rule_count = sum(1 for ln in rules.splitlines() if ln.strip().startswith("- ")) if rules else 0
+        lesson_count = sum(1 for ln in lessons_raw.splitlines() if ln.strip().startswith("- ")) if lessons_raw else 0
+        topics: list[str] = []
+        if hc._topics_dir.is_dir():
+            topics = [p.stem for p in sorted(hc._topics_dir.iterdir()) if p.suffix == ".md"]
 
-    console.print(f"  [anton.cyan]Memory[/] [dim]({project_hc._dir})[/]")
-    if p_identity:
-        entries = [ln.strip()[2:] for ln in p_identity.splitlines() if ln.strip().startswith("- ")]
-        if entries:
-            console.print(f"    Identity:  {', '.join(entries[:3])}" + (" ..." if len(entries) > 3 else ""))
+        console.print(f"  [anton.cyan]{label}[/] [dim]({hc._dir})[/]")
+        if identity:
+            entries = [ln.strip()[2:] for ln in identity.splitlines() if ln.strip().startswith("- ")]
+            if entries:
+                console.print(f"    Identity:  {', '.join(entries[:3])}" + (" ..." if len(entries) > 3 else ""))
+            else:
+                console.print("    Identity:  [dim](set)[/]")
         else:
-            console.print("    Identity:  [dim](set)[/]")
-    else:
-        console.print("    Identity:  [dim](empty)[/]")
-    console.print(f"    Rules:     {p_rule_count}")
-    console.print(f"    Lessons:   {p_lesson_count}")
-    if p_topics:
-        console.print(f"    Topics:    {', '.join(p_topics)}")
-    else:
-        console.print("    Topics:    [dim](none)[/]")
-    console.print()
+            console.print("    Identity:  [dim](empty)[/]")
+        console.print(f"    Rules:     {rule_count}")
+        console.print(f"    Lessons:   {lesson_count}")
+        if topics:
+            console.print(f"    Topics:    {', '.join(topics)}")
+        else:
+            console.print("    Topics:    [dim](none)[/]")
+        console.print()
+        return rule_count + lesson_count
 
-    total = p_rule_count + p_lesson_count
+    # --- Global scope ---
+    global_total = _show_scope("Global Memory", cortex.global_hc)
+
+    # --- Project scope ---
+    project_total = _show_scope("Project Memory", cortex.project_hc)
+
+    total = global_total + project_total
     console.print(f"  Total entries: [bold]{total}[/]")
     if cortex.needs_compaction():
         console.print("  [anton.warning]Compaction needed (>50 entries in a scope)[/]")
