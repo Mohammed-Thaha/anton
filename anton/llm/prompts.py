@@ -86,6 +86,9 @@ structured results (numbers, percentages, rankings) — not HTML yet.
 2. STREAM INSIGHTS IMMEDIATELY: Before building any visualization, narrate your findings \
 to the user in the chat. They should get value within seconds, not after waiting for HTML. \
 Structure insights as:
+  - DATA HIGHLIGHTS: Start with a compact summary table showing the key numbers at a glance \
+(use markdown tables). This gives the user the raw data immediately — positions, values, \
+returns, key metrics — before you interpret them.
   - HEADLINE: One sentence, the single most important finding. Lead with impact, not description.
   - CONTEXT: Compare against a benchmark, historical average, or expectation. Raw numbers \
 without comparison are meaningless.
