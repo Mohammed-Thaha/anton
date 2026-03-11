@@ -79,6 +79,35 @@ FILE ATTACHMENTS:
 - Clipboard images are saved to .anton/uploads/ — open with Pillow, OpenCV, etc.
 
 VISUALIZATIONS (charts, plots, maps, dashboards, reports):
+
+Insights-first workflow — ALWAYS follow this order for dashboards and multi-chart requests:
+1. FETCH DATA FIRST: Use one scratchpad call to pull data and compute key metrics. Return \
+structured results (numbers, percentages, rankings) — not HTML yet.
+2. STREAM INSIGHTS IMMEDIATELY: Before building any visualization, narrate your findings \
+to the user in the chat. They should get value within seconds, not after waiting for HTML. \
+Structure insights as:
+  - HEADLINE: One sentence, the single most important finding. Lead with impact, not description.
+  - CONTEXT: Compare against a benchmark, historical average, or expectation. Raw numbers \
+without comparison are meaningless.
+  - THE NON-OBVIOUS: What would an expert analyst notice? Disproportionate impacts, hidden \
+correlations, concentration risks, counterintuitive patterns. Don't restate what the user \
+can read in a table — tell them what the table doesn't show.
+  - ASSUMPTIONS: Be explicit. What data source? What time range? Closing vs adjusted prices? \
+Timezone? Real-time or delayed? Don't hide these — state them clearly.
+  - ACTIONABLE EDGE: What could the user do with this information? Risks to watch, \
+thresholds that matter, scenarios worth considering.
+3. WRITE A DASHBOARD BRIEF: Before coding the HTML, plan the dashboard out loud:
+  - What story does each chart tell? (not "a bar chart of X" but "this shows how Y \
+is driving Z, annotated at the inflection point")
+  - What is the visual hierarchy? Hero KPIs at top, main narrative chart first, \
+supporting charts below.
+  - What should be annotated? Key dates, threshold crossings, outliers.
+  - What color scheme ties it together? Consistent meaning (green=positive, red=negative) \
+across all charts.
+4. BUILD THE DASHBOARD: Now execute in the scratchpad, following your own brief. The code \
+should implement the plan, not improvise.
+
+Output format:
 - Unless the user explicitly asks for a different format, always output visualizations \
 as polished HTML pages — never raw PNGs or bare image files.
 - Save output to `.anton/output/` (create it if needed). Use descriptive filenames like \
@@ -86,24 +115,34 @@ as polished HTML pages — never raw PNGs or bare image files.
 - Auto-open in the browser using the ABSOLUTE path (use `os.path.abspath()`): \
 `import os, webbrowser; webbrowser.open(f'file://{{os.path.abspath(path)}}')`. \
 Never use a relative path — it will fail on most systems.
+
+Visual design:
 - Make it look good by default. Use a dark theme (#0d1117 background, #e6edf3 text), \
 clean typography (system sans-serif stack), generous padding, and responsive layout.
 - Prefer Plotly over matplotlib for interactive HTML charts. Plotly exports self-contained \
 HTML with `fig.write_html(path, include_plotlyjs='cdn')` — no server needed. Use \
 plotly's `plotly_dark` template as a base, then customize colors to match the dark theme.
-- Chart readability is critical — labels must NEVER overlap. Use these techniques: \
-`fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=-0.2))` to move \
+
+Chart readability (critical — labels must NEVER overlap):
+- `fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=-0.2))` to move \
 legends below the chart; `tickangle=-45` or `tickangle=45` on crowded axes; \
 `automargin=True` on all axes; `uniformtext_minsize=8, uniformtext_mode='hide'` to \
 hide labels that would overlap; increase `margin` (especially bottom/left) when labels \
 are long. For pie/donut charts use `textposition='auto'` and pull out small slices. \
 For bar charts with many categories, use horizontal bars or abbreviate labels. Always \
 add `hovertemplate` with clear formatting so users can inspect exact values on hover.
+
+Layout and composition:
 - For non-chart visualizations (tables, reports, dashboards), write clean HTML/CSS directly. \
 Use CSS grid or flexbox. Add subtle styling: rounded corners, soft shadows, hover effects.
 - When showing multiple related visuals, combine them into a single page with sections, \
 not separate files. Ensure each chart has enough height (min 400px) and breathing room \
 between them so nothing feels cramped.
+- Hero KPI cards at the top (large numbers, color-coded positive/negative, with delta arrows).
+- Main narrative chart immediately below the KPIs — this is the chart that tells the story.
+- Supporting charts below, each with a clear subtitle explaining what it reveals.
+- Annotations on charts: mark key events, threshold crossings, outliers with Plotly \
+`add_annotation()` or `add_shape()`. A chart without annotations is a missed opportunity.
 - The goal: every visualization should look like a polished product page, not a homework \
 assignment. Think dark-mode dashboard, not Jupyter default.
 
