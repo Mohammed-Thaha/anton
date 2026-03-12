@@ -253,15 +253,18 @@ class StreamDisplay:
                 return
 
     def on_tool_use_end(self, tool_id: str) -> None:
-        """Finalize a tool use and print its activity line permanently."""
+        """Finalize a tool use description. Print non-scratchpad tools immediately.
+
+        Scratchpad lines are deferred to scratchpad_start which has the ETA.
+        """
         for act in self._activities:
             if act.tool_id == tool_id:
                 raw = "".join(act.json_parts)
                 act.description = _tool_display_text(act.name, raw)
-                # Print immediately — before execution starts
-                self._stop_spinner()
-                self._print_activity_line(act)
-                self._start_spinner()
+                if act.name != "scratchpad":
+                    self._stop_spinner()
+                    self._print_activity_line(act)
+                    self._start_spinner()
                 return
 
     def update_progress(self, phase: str, message: str, eta: float | None = None) -> None:
@@ -275,11 +278,17 @@ class StreamDisplay:
             return
 
         if phase == "scratchpad_start":
-            # Activity line was already printed by on_tool_use_end.
-            # Show the ETA in the spinner so the user knows how long to wait.
-            eta_str = f" ~{int(eta)}s" if eta else ""
-            self._thinking_msg = f"Running{eta_str}..."
-            self._update_spinner()
+            # Print the scratchpad activity line NOW (before execution) with ETA
+            for act in reversed(self._activities):
+                if act.name == "scratchpad" and not act.eta_str:
+                    if eta:
+                        act.eta_str = f"~{int(eta)}s"
+                    self._stop_spinner()
+                    self._print_activity_line(act)
+                    eta_str = f" ~{int(eta)}s" if eta else ""
+                    self._thinking_msg = f"Running{eta_str}..."
+                    self._start_spinner()
+                    break
             return
 
         if phase == "scratchpad" and self._activities:
