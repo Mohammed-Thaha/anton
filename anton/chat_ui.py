@@ -200,24 +200,24 @@ class StreamDisplay:
         """
         from rich.console import Group
 
-        # Line 1: control + personality
-        line1 = Text()
-        if self._cancel_msg:
-            line1.append(f"\u23f5\u23f5 {self._cancel_msg}", style="#ff69b4")
-        else:
-            line1.append(f"\u23f5\u23f5 Esc to cancel \u2014 {self._line1_fun}", style="#ff69b4")
-
-        # Line 2: spinner + status (we return a Spinner so it animates)
-        # Rich Spinner doesn't compose well in Text, so we build a Group
+        # Line 1: spinner + status
         spinner = Spinner("dots", text=Text(f" {self._line2_status}", style="anton.muted"))
 
-        # Line 3: peek (only if there's something to peek at)
-        parts: list = [line1, spinner]
+        # Line 2: peek (only if there's something to peek at)
+        parts: list = [spinner]
         if self._line3_peek:
             line3 = Text()
             line3.append("  \u21b3 ", style="anton.muted")
             line3.append(self._line3_peek, style="dim")
             parts.append(line3)
+
+        # Line 3: control + personality (at the bottom)
+        cancel_line = Text()
+        if self._cancel_msg:
+            cancel_line.append(f"\u23f5\u23f5 {self._cancel_msg}", style="#ff69b4")
+        else:
+            cancel_line.append(f"\u23f5\u23f5 Esc to cancel \u2014 {self._line1_fun}", style="#ff69b4")
+        parts.append(cancel_line)
 
         return Group(*parts)
 
