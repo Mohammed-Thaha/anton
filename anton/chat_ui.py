@@ -5,7 +5,6 @@ import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from rich.console import Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.spinner import Spinner
@@ -135,93 +134,121 @@ PHASE_LABELS = {
 
 
 class StreamDisplay:
-    """Manages a Rich Live display for streaming LLM responses.
+    """Manages streaming LLM output with permanent prints and a tiny Live spinner.
 
-    Uses a single continuous Live session per turn with transient=False.
-    The Live display IS the final output — finish() renders a clean
-    final frame (no spinner/footer) and stops. No re-printing needed.
+    Content is printed permanently (scrollable) as it arrives.
+    Live is used ONLY for a small spinner+footer at the bottom (1-2 lines),
+    so transient cleanup always works regardless of terminal emulator.
     """
 
     def __init__(self, console: Console, toolbar: dict | None = None) -> None:
         self._console = console
         self._live: Live | None = None
-        self._initial_text = ""
-        self._buffer = ""
-        self._started = False
         self._toolbar = toolbar
         self._activities: list[_ToolActivity] = []
         self._thinking_msg: str = ""
-        self._in_tool_phase = False
-        self._answer_started = False
-        self._last_was_tool = False
         self._footer_msg: str = ""
         self._cancel_msg: str = ""
+        self._buffer = ""  # answer text accumulated during streaming
+        self._in_tool_phase = False
+        self._last_was_tool = False
+        self._initial_text = ""
+        self._initial_printed = False
+        self._active = False
 
     def _set_status(self, text: str) -> None:
         if self._toolbar is not None:
             self._toolbar["status"] = text
 
-    def start(self) -> None:
-        msg = random.choice(THINKING_MESSAGES)  # noqa: S311
-        self._thinking_msg = msg
-        self._set_status(msg)
+    # --- Tiny Live: just spinner + footer (1-2 lines) ---
+
+    def _start_spinner(self, text: str | None = None) -> None:
+        """Start or restart the tiny spinner Live."""
+        self._stop_spinner()
+        msg = text or self._thinking_msg
         spinner = Spinner("dots", text=Text(f" {msg}", style="anton.muted"))
+        footer = self._build_footer()
+        display = Text()
+        display.append_to(spinner)  # type: ignore[union-attr]
         self._live = Live(
-            spinner,
+            self._build_spinner_display(),
             console=self._console,
             refresh_per_second=_REFRESH_FPS,
-            transient=False,
+            transient=True,
         )
         self._live.start()
-        self._initial_text = ""
-        self._buffer = ""
-        self._started = False
+
+    def _stop_spinner(self) -> None:
+        """Stop the spinner (transient=True clears it — always safe, it's tiny)."""
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+
+    def _update_spinner(self) -> None:
+        """Update the spinner display."""
+        if self._live is not None:
+            self._live.update(self._build_spinner_display())
+
+    def _build_spinner_display(self) -> Spinner:
+        """Build the spinner with optional footer text."""
+        if self._cancel_msg:
+            footer = f"  \u23f5\u23f5 {self._cancel_msg}"
+        else:
+            footer = f"  \u23f5\u23f5 Esc to stop \u2014 {self._footer_msg}"
+        spinner = Spinner(
+            "dots",
+            text=Text(f" {self._thinking_msg}  ", style="anton.muted")
+            + Text(footer, style="#ff69b4"),
+        )
+        return spinner
+
+    # --- Public API ---
+
+    def start(self) -> None:
+        self._thinking_msg = random.choice(THINKING_MESSAGES)  # noqa: S311
+        self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        self._set_status(self._thinking_msg)
         self._activities = []
+        self._buffer = ""
+        self._initial_text = ""
+        self._initial_printed = False
         self._in_tool_phase = False
-        self._answer_started = False
         self._last_was_tool = False
         self._cancel_msg = ""
-        self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        self._active = True
+        self._start_spinner()
 
     def append_text(self, delta: str) -> None:
-        if self._live is None:
+        if not self._active:
             return
         if self._in_tool_phase:
-            # Ensure a paragraph break when new text arrives after tool activity
-            if self._buffer and self._last_was_tool:
-                self._buffer += "\n\n"
             self._buffer += delta
-            self._answer_started = True
             self._last_was_tool = False
         else:
             self._initial_text += delta
-        self._started = True
-        self._refresh_live()
 
     def show_tool_result(self, content: str) -> None:
-        """Display a tool result (e.g. scratchpad dump) in the live display."""
-        if self._live is None:
+        """Print a tool result permanently (immediately scrollable)."""
+        if not self._active:
             return
-        if self._buffer:
-            self._buffer += "\n\n"
-        self._buffer += content
+        self._stop_spinner()
+        self._console.print(Markdown(content))
         self._last_was_tool = True
-        self._started = True
-        self._refresh_live()
+        self._start_spinner()
 
     def show_tool_execution(self, task: str) -> None:
         """Backward-compatible wrapper — delegates to on_tool_use_start."""
         self.on_tool_use_start(f"_compat_{id(task)}", task)
 
     def on_tool_use_start(self, tool_id: str, name: str) -> None:
-        """Track a new tool use and update the live display."""
-        if self._live is None:
+        """Track a new tool use and print the activity line."""
+        if not self._active:
             return
         self._in_tool_phase = True
         self._last_was_tool = True
         activity = _ToolActivity(tool_id=tool_id, name=name)
         self._activities.append(activity)
-        self._refresh_live()
+        # Activity line will be printed when we know the description (on_tool_use_end)
 
     def on_tool_use_delta(self, tool_id: str, json_delta: str) -> None:
         """Accumulate JSON input deltas for a tool use."""
@@ -231,163 +258,105 @@ class StreamDisplay:
                 return
 
     def on_tool_use_end(self, tool_id: str) -> None:
-        """Finalize a tool use: parse accumulated JSON and set description."""
+        """Finalize a tool use and print its activity line permanently."""
         for act in self._activities:
             if act.tool_id == tool_id:
                 raw = "".join(act.json_parts)
                 act.description = _tool_display_text(act.name, raw)
-                self._refresh_live()
+                # Print activity line permanently
+                self._stop_spinner()
+                self._print_activity_line(act)
+                self._start_spinner()
                 return
 
     def update_progress(self, phase: str, message: str, eta: float | None = None) -> None:
-        """Update the Live display with agent progress (phase + message + optional ETA)."""
-        if self._live is None:
+        """Update progress — just changes the spinner text."""
+        if not self._active:
             return
 
-        # Tools finished, LLM is now analyzing — update spinner text
         if phase == "analyzing":
             self._thinking_msg = random.choice(ANALYZING_MESSAGES)  # noqa: S311
-            self._refresh_live()
+            self._update_spinner()
             return
 
-        # Scratchpad is about to start — set description + ETA immediately
         if phase == "scratchpad_start" and self._activities:
             for act in reversed(self._activities):
                 if act.name == "scratchpad":
                     act.description = _tool_display_text(act.name, "".join(act.json_parts)) or f"Scratchpad({message})"
                     if eta:
                         act.eta_str = f"~{int(eta)}s"
+                    # Print/update the activity line
+                    self._stop_spinner()
+                    self._print_activity_line(act)
+                    self._start_spinner()
                     break
-            self._refresh_live()
             return
 
-        # For scratchpad streaming, show progress on the activity line itself
         if phase == "scratchpad" and self._activities:
             for act in reversed(self._activities):
                 if act.name == "scratchpad":
                     act.current_progress = message
                     break
-            self._refresh_live()
+            self._thinking_msg = message
+            self._update_spinner()
             return
 
         label = PHASE_LABELS.get(phase, phase)
         eta_str = f"  ~{int(eta)}s" if eta else ""
-        status = f"{label}  {message}{eta_str}"
-        self._set_status(status)
-        self._refresh_live()
+        self._thinking_msg = f"{label}  {message}{eta_str}"
+        self._set_status(self._thinking_msg)
+        self._update_spinner()
 
     def finish(self) -> None:
-        """Render a clean final frame (no spinner/footer) and stop Live."""
-        if self._live is None:
-            return
+        """Stop spinner and print the final answer."""
+        self._stop_spinner()
 
-        # Eagerly finalize any activities that never got on_tool_use_end
-        for act in self._activities:
-            if not act.description and act.json_parts:
-                raw = "".join(act.json_parts)
-                act.description = _tool_display_text(act.name, raw)
+        # Print initial text as muted "inner speech" (if not already printed)
+        if self._initial_text and not self._initial_printed:
+            if self._activities:
+                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
+            # If no activities, initial text IS the answer — handled below
 
-        # Render the clean final frame — this is what stays on screen
-        self._live.update(self._build_final())
-        self._live.stop()
-        self._live = None
+        # Print answer
+        if self._activities:
+            if self._buffer:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(self._buffer))
+        else:
+            all_text = self._initial_text + self._buffer
+            if all_text:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(all_text))
+
+        self._active = False
         self._console.print()
 
     def abort(self) -> None:
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
+        self._stop_spinner()
+        self._active = False
 
     def show_context_compacted(self, message: str) -> None:
         """Show a notification that context was compacted."""
-        if self._live is None:
+        if not self._active:
             return
-        if self._buffer:
-            self._buffer += "\n\n"
-        self._buffer += f"> *{message}*"
-        self._started = True
-        self._refresh_live()
+        self._stop_spinner()
+        self._console.print(Text(f"> {message}", style="anton.muted"))
+        self._start_spinner()
 
     def show_cancelling(self) -> None:
         """Update the footer to acknowledge that cancellation is in progress."""
         self._cancel_msg = random.choice(CANCEL_MESSAGES)  # noqa: S311
-        self._refresh_live()
+        self._update_spinner()
 
     # --- Private helpers ---
 
-    def _build_activity_tree(self, final: bool = False) -> Text:
-        """Render the activity tree as styled Text."""
-        lines = Text()
-        for i, act in enumerate(self._activities):
-            label = act.description or _TOOL_LABELS.get(act.name, act.name)
-            if i == 0:
-                lines.append("\u23bf ")
-            else:
-                lines.append("  ")
-            lines.append(label, style="bold")
-            if act.eta_str and not final:
-                lines.append(f" {act.eta_str}", style="anton.muted")
-            if act.current_progress:
-                lines.append(f" \u2190 {act.current_progress}", style="anton.muted")
-            lines.append("\n")
-        return lines
-
-    def _build_final(self) -> Group:
-        """Build the clean final render — no spinner, no footer."""
-        parts: list = []
-
-        if self._activities:
-            if self._initial_text:
-                parts.append(Text(self._initial_text.rstrip(), style="anton.muted"))
-            parts.append(self._build_activity_tree(final=True))
-            if self._buffer:
-                parts.append(Text("anton> ", style="anton.cyan"))
-                parts.append(Markdown(self._buffer))
-        else:
-            all_text = self._initial_text + self._buffer
-            if all_text:
-                parts.append(Text("anton> ", style="anton.cyan"))
-                parts.append(Markdown(all_text))
-
-        return Group(*parts) if parts else Group(Text(""))
-
-    def _refresh_live(self) -> None:
-        """Recompose the live display: anton> initial, spinner, tree, answer."""
-        if self._live is None:
-            return
-
-        parts: list = []
-
-        if self._activities:
-            # Show initial text as muted "inner speech" at top
-            if self._initial_text:
-                parts.append(Text(self._initial_text.rstrip(), style="anton.muted"))
-
-            # Spinner while tools are running (before answer streams)
-            if not self._answer_started:
-                spinner = Spinner("dots", text=Text(f" {self._thinking_msg}", style="anton.muted"))
-                parts.append(spinner)
-
-            # Activity tree
-            parts.append(self._build_activity_tree())
-
-            # Answer text below tree
-            if self._buffer:
-                parts.append(Text())
-                parts.append(Markdown(self._buffer))
-        elif self._initial_text:
-            # Pure text streaming, no tools yet
-            parts.append(Markdown(self._initial_text))
-        else:
-            # Nothing yet — just spinner
-            spinner = Spinner("dots", text=Text(f" {self._thinking_msg}", style="anton.muted"))
-            parts.append(spinner)
-
-        # Working footer — visible while streaming
-        if self._cancel_msg:
-            footer = Text(f"\n\u23f5\u23f5 {self._cancel_msg}", style="#ff69b4")
-        else:
-            footer = Text(f"\n\u23f5\u23f5 Esc to stop \u2014 {self._footer_msg}", style="#ff69b4")
-        parts.append(footer)
-
-        self._live.update(Group(*parts) if len(parts) > 1 else parts[0])
+    def _print_activity_line(self, act: _ToolActivity) -> None:
+        """Print a single activity line permanently."""
+        line = Text()
+        label = act.description or _TOOL_LABELS.get(act.name, act.name)
+        prefix = "\u23bf " if act is self._activities[0] else "  "
+        line.append(prefix)
+        line.append(label, style="bold")
+        if act.eta_str:
+            line.append(f" {act.eta_str}", style="anton.muted")
+        self._console.print(line)
