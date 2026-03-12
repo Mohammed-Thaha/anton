@@ -34,6 +34,8 @@ _TOOL_LABELS: dict[str, str] = {
 
 _MAX_DESC = 60
 
+_REFRESH_FPS = 6
+
 
 def _tool_display_text(name: str, input_json: str) -> str:
     """Map tool name + raw JSON input to a human-readable description."""
@@ -133,11 +135,16 @@ PHASE_LABELS = {
 
 
 class StreamDisplay:
-    """Manages a Rich Live display for streaming LLM responses."""
+    """Manages a Rich Live display for streaming LLM responses.
+
+    Uses segmented Live sessions: Live is active only while content is
+    actively streaming. Between phases (e.g. after a tool result, before
+    analysis), content is printed permanently so the user can scroll.
+    """
 
     def __init__(self, console: Console, toolbar: dict | None = None) -> None:
         self._console = console
-        self._live: object | None = None
+        self._live: Live | None = None
         self._initial_text = ""
         self._buffer = ""
         self._started = False
@@ -149,38 +156,87 @@ class StreamDisplay:
         self._last_was_tool = False
         self._footer_msg: str = ""
         self._cancel_msg: str = ""
+        self._active = False  # True between start() and finish()/abort()
 
     def _set_status(self, text: str) -> None:
         if self._toolbar is not None:
             self._toolbar["status"] = text
 
+    # --- Live lifecycle helpers ---
+
+    def _start_live(self, spinner_text: str | None = None) -> None:
+        """Start a new Live segment (or no-op if already running)."""
+        if self._live is not None:
+            return
+        text = spinner_text or self._thinking_msg
+        spinner = Spinner("dots", text=Text(f" {text}", style="anton.muted"))
+        self._live = Live(
+            spinner,
+            console=self._console,
+            refresh_per_second=_REFRESH_FPS,
+            transient=True,
+        )
+        self._live.start()
+
+    def _stop_live(self) -> None:
+        """Stop the current Live segment (content vanishes — caller prints permanently)."""
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+
+    def _flush_to_permanent(self) -> None:
+        """Stop Live and print all accumulated content as permanent, scrollable output."""
+        self._stop_live()
+
+        # Print initial text (muted "inner speech")
+        if self._initial_text:
+            if self._activities:
+                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
+            else:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(self._initial_text))
+            self._initial_text = ""
+
+        # Print activity tree
+        if self._activities:
+            self._console.print(self._build_activity_tree(final=True))
+            self._activities_printed = True
+
+        # Print buffered answer text
+        if self._buffer:
+            if not hasattr(self, "_answer_header_printed") or not self._answer_header_printed:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._answer_header_printed = True
+            self._console.print(Markdown(self._buffer))
+            self._buffer = ""
+
+    # --- Public API ---
+
     def start(self) -> None:
         msg = random.choice(THINKING_MESSAGES)  # noqa: S311
         self._thinking_msg = msg
         self._set_status(msg)
-        spinner = Spinner("dots", text=Text(f" {msg}", style="anton.muted"))
-        self._live = Live(
-            spinner,
-            console=self._console,
-            refresh_per_second=12,
-            transient=True,
-        )
-        self._live.start()
         self._initial_text = ""
         self._buffer = ""
         self._started = False
         self._activities = []
+        self._activities_printed = False
+        self._answer_header_printed = False
         self._in_tool_phase = False
         self._answer_started = False
         self._last_was_tool = False
         self._cancel_msg = ""
         self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        self._active = True
+        self._start_live()
 
     def append_text(self, delta: str) -> None:
-        if self._live is None:
+        if not self._active:
             return
+        # Restart Live if it was stopped between phases
+        if self._live is None:
+            self._start_live()
         if self._in_tool_phase:
-            # Ensure a paragraph break when new text arrives after tool activity
             if self._buffer and self._last_was_tool:
                 self._buffer += "\n\n"
             self._buffer += delta
@@ -192,15 +248,15 @@ class StreamDisplay:
         self._refresh_live()
 
     def show_tool_result(self, content: str) -> None:
-        """Display a tool result (e.g. scratchpad dump) directly to the user."""
-        if self._live is None:
+        """Flush current content permanently, then print tool result permanently."""
+        if not self._active:
             return
-        if self._buffer:
-            self._buffer += "\n\n"
-        self._buffer += content
+        # Flush everything accumulated so far
+        self._flush_to_permanent()
+        # Print the tool result directly — scrollable immediately
+        self._console.print(Markdown(content))
         self._last_was_tool = True
         self._started = True
-        self._refresh_live()
 
     def show_tool_execution(self, task: str) -> None:
         """Backward-compatible wrapper — delegates to on_tool_use_start."""
@@ -208,8 +264,11 @@ class StreamDisplay:
 
     def on_tool_use_start(self, tool_id: str, name: str) -> None:
         """Track a new tool use and update the live display."""
-        if self._live is None:
+        if not self._active:
             return
+        # Restart Live if stopped between phases
+        if self._live is None:
+            self._start_live()
         self._in_tool_phase = True
         self._last_was_tool = True
         activity = _ToolActivity(tool_id=tool_id, name=name)
@@ -234,13 +293,14 @@ class StreamDisplay:
 
     def update_progress(self, phase: str, message: str, eta: float | None = None) -> None:
         """Update the Live display with agent progress (phase + message + optional ETA)."""
-        if self._live is None:
+        if not self._active:
             return
 
-        # Tools finished, LLM is now analyzing — update spinner text
+        # Tools finished, LLM is now analyzing — flush results, restart with analyzing spinner
         if phase == "analyzing":
+            self._flush_to_permanent()
             self._thinking_msg = random.choice(ANALYZING_MESSAGES)  # noqa: S311
-            self._refresh_live()
+            self._start_live(self._thinking_msg)
             return
 
         # Scratchpad is about to start — set description + ETA immediately
@@ -270,43 +330,17 @@ class StreamDisplay:
         self._refresh_live()
 
     def finish(self) -> None:
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
-
-        # Eagerly finalize any activities that never got on_tool_use_end
-        for act in self._activities:
-            if not act.description and act.json_parts:
-                raw = "".join(act.json_parts)
-                act.description = _tool_display_text(act.name, raw)
-
-        if self._activities:
-            # Print initial text as muted "inner speech" (thinking before acting)
-            if self._initial_text:
-                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
-            # Print finalized activity tree
-            self._console.print(self._build_activity_tree(final=True))
-            # Print answer
-            if self._buffer:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._console.print(Markdown(self._buffer))
-        else:
-            # No tools — print response normally
-            all_text = self._initial_text + self._buffer
-            if all_text:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._console.print(Markdown(all_text))
-
+        self._flush_to_permanent()
+        self._active = False
         self._console.print()
 
     def abort(self) -> None:
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
+        self._stop_live()
+        self._active = False
 
     def show_context_compacted(self, message: str) -> None:
         """Show a notification that context was compacted."""
-        if self._live is None:
+        if not self._active:
             return
         if self._buffer:
             self._buffer += "\n\n"
@@ -339,7 +373,7 @@ class StreamDisplay:
         return lines
 
     def _refresh_live(self) -> None:
-        """Recompose the live display: anton> initial, spinner, tree, answer."""
+        """Recompose the live display: spinner, tree, streaming text."""
         if self._live is None:
             return
 

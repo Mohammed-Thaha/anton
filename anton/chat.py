@@ -1921,7 +1921,7 @@ class _ClosingSpinner:
         from rich.text import Text
 
         spinner = Spinner("dots", text=Text(" Closing scratchpad processes…", style="anton.muted"))
-        self._live = Live(spinner, console=self._console, refresh_per_second=12, transient=True)
+        self._live = Live(spinner, console=self._console, refresh_per_second=6, transient=True)
         self._live.start()
 
     def stop(self) -> None:
