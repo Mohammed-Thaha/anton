@@ -199,7 +199,6 @@ def main(
     from anton.updater import check_and_update
     if check_and_update(console, settings):
         # Re-exec with the freshly installed code so no old modules remain in memory.
-        import os
         os.execv(sys.executable, [sys.executable, "-m", "anton"] + sys.argv[1:])
 
     ctx.ensure_object(dict)
