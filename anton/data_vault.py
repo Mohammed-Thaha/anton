@@ -26,7 +26,6 @@ class DataVault:
     def __init__(self, vault_dir: Path | None = None) -> None:
         self._dir = vault_dir or Path("~/.anton/data_vault").expanduser()
 
-    # ── Paths ─────────────────────────────────────────────────────
 
     def _path_for(self, engine: str, name: str) -> Path:
         return self._dir / f"{_sanitize(engine)}-{_sanitize(name)}"
@@ -35,7 +34,6 @@ class DataVault:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._dir.chmod(0o700)
 
-    # ── CRUD ──────────────────────────────────────────────────────
 
     def save(self, engine: str, name: str, credentials: dict[str, str]) -> Path:
         """Write credentials as JSON. Creates vault dir if needed."""
@@ -89,7 +87,6 @@ class DataVault:
                 continue
         return results
 
-    # ── Environment injection ──────────────────────────────────────
 
     def inject_env(self, engine: str, name: str) -> list[str] | None:
         """Load credentials and set DS_<FIELD_UPPER> in os.environ.
@@ -113,7 +110,6 @@ class DataVault:
         for key in ds_keys:
             del os.environ[key]
 
-    # ── Helpers ───────────────────────────────────────────────────
 
     def next_connection_number(self, engine: str) -> int:
         """Return the next auto-increment number for an engine (1-based).
