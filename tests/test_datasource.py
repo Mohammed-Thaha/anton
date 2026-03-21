@@ -806,10 +806,10 @@ class TestCredentialScrubbing:
         pg = registry.get("postgresql")
         assert pg is not None
         _register_secret_vars(pg)
-        monkeypatch.setenv("DS_HOST", "db.example.com")
+        monkeypatch.setenv("DS_HOST", "mydbhostname")
         monkeypatch.setenv("DS_PASSWORD", "s3cr3tpassword99")
-        result = _scrub_credentials("host=db.example.com pass=s3cr3tpassword99")
-        assert "db.example.com" in result
+        result = _scrub_credentials("host=mydbhostname pass=s3cr3tpassword99")
+        assert "mydbhostname" in result
         assert "s3cr3tpassword99" not in result
         assert "[DS_PASSWORD]" in result
 
@@ -890,9 +890,9 @@ class TestCredentialScrubbing:
     def test_scrub_leaves_namespaced_non_secret_readable(self, registry, monkeypatch):
         pg = registry.get("postgresql")
         _register_secret_vars(pg, engine="postgresql", name="prod_db")
-        monkeypatch.setenv("DS_POSTGRESQL_PROD_DB__HOST", "db.example.com")
-        result = _scrub_credentials("host=db.example.com")
-        assert "db.example.com" in result
+        monkeypatch.setenv("DS_POSTGRESQL_PROD_DB__HOST", "mydbhostname")
+        result = _scrub_credentials("host=mydbhostname")
+        assert "mydbhostname" in result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

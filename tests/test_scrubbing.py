@@ -57,9 +57,9 @@ class TestScrubCredentials:
     def test_non_secret_var_not_scrubbed(self, monkeypatch):
         """A known but non-secret DS_* var (e.g. DS_HOST) stays readable."""
         _DS_KNOWN_VARS.add("DS_HOST")
-        monkeypatch.setenv("DS_HOST", "db.example.com")
-        result = _scrub_credentials("host=db.example.com")
-        assert "db.example.com" in result
+        monkeypatch.setenv("DS_HOST", "mydbhostname")
+        result = _scrub_credentials("host=mydbhostname")
+        assert "mydbhostname" in result
 
     def test_unknown_short_ds_var_not_scrubbed(self, monkeypatch):
         """Unknown DS_* vars with short values are NOT scrubbed (heuristic threshold)."""
