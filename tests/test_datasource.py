@@ -1462,6 +1462,42 @@ class TestParseConnectionSlug:
     def test_slug_with_empty_name_part(self):
         assert parse_connection_slug("postgresql-", self.ENGINES) is None
 
+    def test_fallback_to_vault_for_custom_engine(self, tmp_path):
+        """Custom engine not in registry is resolved via vault fallback."""
+        vault = DataVault(vault_dir=tmp_path / "vault")
+        vault.save("my_custom_db", "prod", {"host": "localhost"})
+        result = parse_connection_slug(
+            "my_custom_db-prod",
+            known_engines=["postgresql"],
+            vault=vault,
+        )
+        assert result == ("my_custom_db", "prod")
+
+    def test_registry_match_takes_priority_over_vault(self, tmp_path):
+        """Registry prefix match wins even when vault also has the slug."""
+        vault = DataVault(vault_dir=tmp_path / "vault")
+        vault.save("postgresql", "prod", {"host": "localhost"})
+        result = parse_connection_slug(
+            "postgresql-prod",
+            known_engines=["postgresql"],
+            vault=vault,
+        )
+        assert result == ("postgresql", "prod")
+
+    def test_no_match_returns_none_with_vault(self, tmp_path):
+        """Truly unknown slug returns None even with vault supplied."""
+        vault = DataVault(vault_dir=tmp_path / "vault")
+        result = parse_connection_slug(
+            "ghost-engine-1",
+            known_engines=["postgresql"],
+            vault=vault,
+        )
+        assert result is None
+
+    def test_no_vault_still_returns_none_for_unknown(self):
+        """Backward compat: no vault arg, unknown engine still returns None."""
+        assert parse_connection_slug("custom-1", known_engines=["postgresql"]) is None
+
 
 class TestSlugEnvPrefix:
     def test_basic_engine_and_name(self):
@@ -1676,10 +1712,7 @@ class TestAddCustomDatasourceFlow:
 
     def _mock_ds_path(self, mock_path_cls, tmp_path):
         """Wire Path mock so datasources.md writes go to tmp_path."""
-        mock_ds = MagicMock()
-        mock_ds.is_file.return_value = False
-        mock_ds.with_suffix.return_value = tmp_path / "datasources.tmp"
-        mock_path_cls.return_value.expanduser.return_value = mock_ds
+        mock_path_cls.return_value.expanduser.return_value = tmp_path / "datasources.md"
 
     @pytest.mark.asyncio
     async def test_missing_required_non_secret_field_prompts_user(

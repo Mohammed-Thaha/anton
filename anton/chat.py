@@ -1049,19 +1049,33 @@ def _reset_registered_ds_vars() -> None:
     _DS_KNOWN_VARS.clear()
 
 
-def parse_connection_slug(slug: str, known_engines: list[str]) -> tuple[str, str] | None:
+def parse_connection_slug(
+    slug: str,
+    known_engines: list[str],
+    *,
+    vault: DataVault | None = None,
+) -> tuple[str, str] | None:
     """Split a connection slug into (engine, name) using longest-prefix matching.
 
-    Tries each known engine slug longest-first so that 'sql-server-prod-db' is
+    First tries each known registry engine longest-first so that 'sql-server-prod-db' is
     correctly parsed as engine='sql-server', name='prod-db' rather than
     engine='sql', name='server-prod-db'.
 
-    Returns None if no known engine prefix matches or if the name part is empty.
+    If nothing matches and a vault is supplied, falls back to scanning vault
+    connections for an exact slug match — handles custom/unregistered engines.
+
+    Returns None if no match found or name part is empty.
     """
     for engine in sorted(known_engines, key=len, reverse=True):
         prefix = engine + "-"
         if slug.startswith(prefix) and len(slug) > len(prefix):
             return (engine, slug[len(prefix):])
+
+    if vault is not None:
+        for conn in vault.list_connections():
+            if f"{conn['engine']}-{conn['name']}" == slug:
+                return (conn["engine"], conn["name"])
+
     return None
 
 
@@ -2823,7 +2837,7 @@ async def _handle_connect_datasource(
     # ── /edit-data-source path: update credentials for an existing slug ────────
     if datasource_name is not None:
         _parsed = parse_connection_slug(
-            datasource_name, [e.engine for e in registry.all_engines()]
+            datasource_name, [e.engine for e in registry.all_engines()], vault=vault
         )
         if _parsed is None:
             console.print(
@@ -3448,7 +3462,7 @@ def _handle_remove_data_source(console: Console, slug: str) -> None:
     """Delete a connection from the Local Vault by slug (engine-name)."""
     vault = DataVault()
     registry = DatasourceRegistry()
-    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()])
+    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()], vault=vault)
     if _parsed is None:
         console.print(
             f"[anton.warning]Invalid name '{slug}'. Use engine-name format.[/]"
@@ -3486,7 +3500,7 @@ async def _handle_test_datasource(
 
     vault = DataVault()
     registry = DatasourceRegistry()
-    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()])
+    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()], vault=vault)
     if _parsed is None:
         console.print(
             f"[anton.warning]Invalid name '{slug}'. Use engine-name format.[/]"

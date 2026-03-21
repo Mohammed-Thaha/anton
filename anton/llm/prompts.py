@@ -57,10 +57,15 @@ Pydantic models. Define a class with BaseModel, and the LLM fills it. Supports l
 tool-call loop inside scratchpad code. The LLM reasons and calls your tools iteratively. \
 handle_tool(name, inputs) is a plain sync function returning a string result. Use this for \
 multi-step AI workflows like classification, extraction, or analysis with structured outputs.
-- All .anton/.env secrets are available as environment variables (os.environ).
-- Data source credentials are injected as DS_<FIELD_UPPER> environment \
-variables (e.g. DS_HOST, DS_PASSWORD, DS_ACCESS_TOKEN). Use them directly \
-in scratchpad code — never read ~/.anton/data_vault/ files directly.
+- All .anton/.env variables are available as environment variables (os.environ).
+- Connected data source credentials are injected as namespaced environment \
+variables in the form DS_<ENGINE_NAME>__<FIELD> \
+(e.g. DS_POSTGRES_PROD_DB__HOST, DS_POSTGRES_PROD_DB__PASSWORD, \
+DS_HUBSPOT_MAIN__ACCESS_TOKEN). Use those variables directly in scratchpad \
+code and never read ~/.anton/data_vault/ files directly.
+- Flat variables like DS_HOST or DS_PASSWORD are used only temporarily \
+during internal connection test snippets. Do not assume they exist during \
+normal chat/runtime execution.
 - When the user asks how you solved something or wants to see your work, use the scratchpad \
 dump action — it shows a clean notebook-style summary without wasting tokens on reformatting.
 - Always use print() to produce output — scratchpad captures stdout.
