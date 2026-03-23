@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import json as _json
+import os
 import re as _re
 import sys
 import time
@@ -48,6 +48,7 @@ from anton.datasource_registry import (
     DatasourceField,
     DatasourceRegistry,
 )
+
 from rich.prompt import Confirm, Prompt
 
 if TYPE_CHECKING:
