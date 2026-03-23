@@ -2652,14 +2652,24 @@ async def _handle_add_custom_datasource(
     preamble = "[anton.cyan](anton)[/] "
     if name:
         tool_name = name
+        name_context = f"'{name}' isn't in my built-in list.\n        "
     else:
         tool_name = Prompt.ask(
             f"{preamble}What is the name of the tool or service?",
             console=console,
         )
-    if not tool_name.strip():
+        if not tool_name.strip():
+            return None
+        tool_name = tool_name.strip()
+        name_context = ""
+
+    user_answer = Prompt.ask(
+        f"{preamble}{name_context}How do you authenticate with it? "
+        "Describe what credentials you have (don't paste actual values)",
+        console=console,
+    )
+    if not user_answer.strip():
         return None
-    tool_name = tool_name.strip()
 
     console.print()
     console.print("[anton.muted]    Got it — working out the connection details…[/]")
@@ -2671,7 +2681,7 @@ async def _handle_add_custom_datasource(
                 {
                     "role": "user",
                     "content": (
-                        f"The user wants to connect to {repr(tool_name)}.\n\n"
+                        f"The user wants to connect to {repr(tool_name)} and said: {user_answer}\n\n"
                         "Return ONLY valid JSON (no markdown fences, no commentary):\n"
                         '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
                         '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
@@ -2754,11 +2764,11 @@ async def _handle_add_custom_datasource(
     # Prompt for any required non-secret fields not provided inline
     for f, raw in zip(fields, raw_fields):
         if f.secret:
-            continue  # already handled above
+            continue
         if not f.required:
-            continue  # optional fields handled below
+            continue
         if f.name in credentials:
-            continue  # already collected inline
+            continue
         value = Prompt.ask(
             f"[anton.cyan](anton)[/] {f.name}",
             console=console,
@@ -2862,7 +2872,6 @@ async def _handle_connect_datasource(
     vault = DataVault()
     registry = DatasourceRegistry()
 
-    # ── /edit-data-source path: update credentials for an existing slug ────────
     if datasource_name is not None:
         _parsed = parse_connection_slug(
             datasource_name, [e.engine for e in registry.all_engines()], vault=vault
@@ -3032,7 +3041,6 @@ async def _handle_connect_datasource(
         )
         return session
 
-    # ── Normal flow: connect a new (or reconnect an existing) data source ─────
     console.print()
     all_engines = registry.all_engines()
 
@@ -3051,7 +3059,6 @@ async def _handle_connect_datasource(
             console=console,
         )
 
-    # ── Reconnect path: user typed an existing vault slug ─────────────────────
     stripped_answer = answer.strip()
     known_slugs = {f"{c['engine']}-{c['name']}": c for c in vault.list_connections()}
     if stripped_answer in known_slugs:
@@ -3080,7 +3087,6 @@ async def _handle_connect_datasource(
         )
         return session
 
-    # ── Number selection ───────────────────────────────────────────────────────
     engine_def: DatasourceEngine | None = None
     _go_custom = False
 
@@ -3098,13 +3104,10 @@ async def _handle_connect_datasource(
             console.print()
             return session
 
-    # ── Name-based resolution (when not a number) ─────────────────────────────
     if engine_def is None and not _go_custom:
-        # 1. Exact / case-insensitive / whitespace-normalized match
         engine_def = registry.find_by_name(stripped_answer)
-
+        # if exact match not found, try substring match against display and engine names
         if engine_def is None:
-            # 2. Substring match
             needle = stripped_answer.lower()
             candidates = [
                 e
@@ -3133,9 +3136,8 @@ async def _handle_connect_datasource(
                     console.print("[anton.warning]Invalid choice. Aborting.[/]")
                     console.print()
                     return session
-
+        # fuzzy match against display and engine names if exact match not found
         if engine_def is None:
-            # 3. Fuzzy / close match
             fuzzy_matches = registry.fuzzy_find(stripped_answer)
             for suggestion in fuzzy_matches:
                 console.print()
@@ -3158,7 +3160,6 @@ async def _handle_connect_datasource(
         if engine_def is None:
             _go_custom = True
 
-    # ── Custom datasource flow ────────────────────────────────────────────────
     if _go_custom:
         result = await _handle_add_custom_datasource(
             console, stripped_answer if not stripped_answer.isdigit() else "", registry, session
@@ -3192,7 +3193,6 @@ async def _handle_connect_datasource(
         )
         return session
 
-    # ── Step 2a: auth method choice (if engine requires it) ───────
     active_fields = engine_def.fields
     if engine_def.auth_method == "choice" and engine_def.auth_methods:
         console.print()
@@ -3244,7 +3244,6 @@ async def _handle_connect_datasource(
 
     console.print()
 
-    # ── Step 3: determine collection mode ────────────────────────
     mode_answer = (
         Prompt.ask(
             "[anton.cyan](anton)[/] Do you have these available? [y/n/<list params>]",
