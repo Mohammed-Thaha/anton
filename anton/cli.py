@@ -290,6 +290,11 @@ def _onboard(settings) -> None:
             console.print(line)
 
 
+def _ensure_api_key(settings) -> None:
+    if not _has_api_key(settings):
+        _onboard(settings)
+
+
 def _animate_onboard(console, version: str, intro_lines: list[str], *, settings, ws) -> None:
     """Animate the robot talking while typing out the intro text below."""
     import time
