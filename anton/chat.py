@@ -2684,6 +2684,7 @@ async def _handle_add_custom_datasource(
                         f"The user wants to connect to {repr(tool_name)} and said: {user_answer}\n\n"
                         "Return ONLY valid JSON (no markdown fences, no commentary):\n"
                         '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
+                        '"test_snippet":"python code that tests the connection using os.environ vars DS_FIELDNAME (uppercase field name with DS_ prefix) and prints ok on success, or empty string if untestable",'
                         '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
                         '"secret":true or false,"required":true or false,"description":"what it is"}]}'
                     ),
@@ -2702,6 +2703,7 @@ async def _handle_add_custom_datasource(
         console.print()
         return None
 
+    test_snippet = str(data.get("test_snippet", "")).strip()
     raw_fields = data.get("fields") or []
     fields: list[DatasourceField] = []
     for f in raw_fields:
@@ -2801,6 +2803,11 @@ async def _handle_add_custom_datasource(
         f'secret: {str(f.secret).lower()}, description: "{f.description}" }}'
         for f in fields
     )
+    test_snippet_yaml = ""
+    if test_snippet:
+        indented = "\n".join(f"  {line}" for line in test_snippet.splitlines())
+        test_snippet_yaml = f"test_snippet: |\n{indented}\n"
+
     yaml_block = (
         f"\n---\n\n## {display_name}\n"
         "```yaml\n"
@@ -2808,7 +2815,8 @@ async def _handle_add_custom_datasource(
         f"display_name: {display_name}\n"
         + (f"pip: {pip_pkg}\n" if pip_pkg else "")
         + f"fields:\n{field_lines}\n"
-        "```\n"
+        + test_snippet_yaml
+        + "```\n"
     )
     user_ds_path = Path("~/.anton/datasources.md").expanduser()
     tmp_path = user_ds_path.with_suffix(".tmp")
