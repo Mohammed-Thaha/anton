@@ -344,16 +344,20 @@ def _animate_onboard(console, version: str, intro_lines: list[str]) -> None:
     from anton.channel.branding import _render_robot_static
 
     _render_robot_static(console, "\u2661\u2661\u2661\u2661")
-    console.print(f"[{g}] {'━' * 40}[/]")
+    console.print(f"[anton.glow] {'━' * 40}[/]")
     console.print(f" v{version} \u2014 [anton.muted]\"{tagline}\"[/]")
     console.print()
-    console.print("[anton.cyan] anton>[/] ", end="")
+    console.print("[anton.cyan]anton>[/] ", end="")
+    first_text = True
     for line in intro_lines:
         if line == "":
-            console.print()
+            if not first_text:
+                console.print()
         elif line.startswith("  \u2713"):
+            first_text = False
             console.print(f"[anton.success]{line}[/]")
         else:
+            first_text = False
             console.print(line)
 
     console.print("  [bold]1[/]  [link=https://mdb.ai][anton.cyan]MindsDB Cloud[/][/link] [anton.success](recommended)[/]")
