@@ -1528,12 +1528,30 @@ async def _handle_setup_models(
     # Always persist API keys and model settings to global ~/.anton/.env
     global_ws = _Workspace(Path.home())
 
+    def _provider_label(provider: str) -> str:
+        if provider == "openai-compatible":
+            if settings.minds_url and "mdb.ai" in settings.minds_url:
+                return "Minds-Cloud"
+            return "Minds-Enterprise"
+        return provider.capitalize()
+
+    def _model_label(model: str, role: str) -> str:
+        if model in ("_reason_", "_code_"):
+            return f"smart_router({role})"
+        return model
+
+    provider_display = _provider_label(settings.planning_provider)
+    planning_display = _model_label(settings.planning_model, "planning")
+    coding_display = _model_label(settings.coding_model, "coding")
+
     console.print()
     console.print("[anton.cyan]Current configuration:[/]")
-    console.print(f"  Provider (planning): [bold]{settings.planning_provider}[/]")
-    console.print(f"  Provider (coding):   [bold]{settings.coding_provider}[/]")
-    console.print(f"  Planning model:      [bold]{settings.planning_model}[/]")
-    console.print(f"  Coding model:        [bold]{settings.coding_model}[/]")
+    console.print(f"  Provider: [bold]{provider_display}[/]")
+    if planning_display == coding_display:
+        console.print(f"  Model:    [bold]{planning_display}[/]")
+    else:
+        console.print(f"  Planning: [bold]{planning_display}[/]")
+        console.print(f"  Coding:   [bold]{coding_display}[/]")
     console.print()
 
     # --- Provider ---
@@ -1552,29 +1570,26 @@ async def _handle_setup_models(
         r"  [bold]3[/]  OpenAI-compatible (custom endpoint)   [dim]\[experimental][/]"
     )
     console.print()
+    # Use the same onboarding flow from cli.py
 
-    choice = Prompt.ask(
-        "Select provider",
-        choices=["1", "2", "3"],
-        default=current_num,
-        console=console,
-    )
-    provider = providers[choice]
-
-    # --- Base URL (OpenAI-compatible only) ---
-    if provider == "openai-compatible":
-        current_base_url = settings.openai_base_url or ""
+    def _print_choices():
+        console.print("  [bold]1[/]  [link=https://mdb.ai][anton.cyan]Minds-Cloud[/][/link] [anton.success](recommended)[/]")
+        console.print("  [bold]2[/]  [anton.cyan]Minds-Enterprise Server[/]")
+        console.print("  [bold]3[/]  [anton.cyan]Bring your own key[/] [anton.muted]Anthropic / OpenAI[/]")
+        console.print("  [bold]q[/]  [anton.muted]Back[/]")
         console.print()
-        base_url = Prompt.ask(
-            f"API base URL [dim](e.g. http://localhost:11434/v1)[/]",
-            default=current_base_url,
+
+    _print_choices()
+
+    while True:
+        choice = Prompt.ask(
+            "Choose LLM Provider",
+            choices=["1", "2", "3", "q"],
+            default="q",
             console=console,
         )
-        base_url = base_url.strip()
-        if base_url:
-            settings.openai_base_url = base_url
-            global_ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
 
+<<<<<<< HEAD
     # --- API key ---
     key_attr = "anthropic_api_key" if provider == "anthropic" else "openai_api_key"
     current_key = getattr(settings, key_attr) or ""
@@ -1588,14 +1603,25 @@ async def _handle_setup_models(
         console=console,
     )
     api_key = api_key.strip()
+=======
+        if choice == "q":
+            return session
+>>>>>>> origin/onboarding-launch
 
-    # --- Models ---
-    defaults = {
-        "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
-        "openai": ("gpt-5-mini", "gpt-5-nano"),
-    }
-    default_planning, default_coding = defaults.get(provider, ("", ""))
+        try:
+            if choice == "1":
+                _setup_minds(settings, global_ws)
+            elif choice == "2":
+                _setup_minds(settings, global_ws, default_url=None)
+            else:
+                _setup_other_provider(settings, global_ws)
+            break
+        except _SetupRetry:
+            console.print()
+            _print_choices()
+            continue
 
+<<<<<<< HEAD
     console.print()
     planning_model = Prompt.ask(
         "Planning model",
@@ -1641,6 +1667,9 @@ async def _handle_setup_models(
         )
         console.print()
         return session
+=======
+    global_ws.apply_env_to_process()
+>>>>>>> origin/onboarding-launch
 
     console.print()
     console.print("[anton.success]Configuration updated.[/]")
@@ -3887,9 +3916,14 @@ async def _chat_loop(
         if resumed_id:
             current_session_id = resumed_id
 
+<<<<<<< HEAD
     console.print(
         "[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]"
     )
+=======
+
+    console.print("[anton.muted] Chat with me, type '/help' for commands or 'exit' to quit.[/]")
+>>>>>>> origin/onboarding-launch
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
