@@ -214,12 +214,14 @@ def main(
     ctx.obj["settings"] = settings
 
     if ctx.invoked_subcommand is None:
-        from anton.channel.branding import render_banner
         from anton.chat import run_chat
 
-        render_banner(console)
         _ensure_workspace(settings)
-        _ensure_api_key(settings)
+        if not _has_api_key(settings):
+            _onboard(settings)
+        else:
+            from anton.channel.branding import render_banner
+            render_banner(console)
         run_chat(console, settings, resume=resume)
 
 
@@ -234,70 +236,69 @@ def _has_api_key(settings) -> bool:
     return True
 
 
-def _ensure_api_key(settings) -> None:
-    """Prompt the user to configure a provider and API key if none is set."""
-    if _has_api_key(settings):
-        return
-
-    from rich.panel import Panel
+def _onboard(settings) -> None:
+    """First-time onboarding: robot intro + LLM provider selection."""
     from rich.prompt import Prompt
     from rich.text import Text
 
+    from anton import __version__
+    from anton.channel.branding import _render_robot_static
     from anton.workspace import Workspace
 
     ws = Workspace(Path.home())
 
-    from rich.table import Table
+    # Robot on the left, intro text on the right
+    g = "anton.glow"
+    m = "anton.muted"
 
-    table = Table(
-        show_header=False,
-        show_edge=False,
-        show_lines=False,
-        padding=(0, 2),
-        expand=True,
-    )
-    table.add_column(ratio=1)
-    table.add_column("", width=1, style="anton.cyan_dim")
-    table.add_column(ratio=1)
+    # Build robot lines (static, no animation for clean layout)
+    robot_lines = [
+        f"[{g}]        \u2590[/]",
+        f"[{g}]   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584[/]   [{g}]\u2661\u2661\u2661\u2661[/]",
+        f"[{g}] \u2588\u2588[/]  [{m}](\u00b0\u1d17\u00b0)[/] [{g}]\u2588\u2588[/]",
+        f"[{g}]   \u2580\u2588\u2584\u2588\u2588\u2584\u2588\u2580[/]"
+        f"          [{g}]\u2584\u2580\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588\u2580\u2588 \u2588\u2584 \u2588[/]",
+        f"[{g}]    \u2590   \u2590[/]"
+        f"            [{g}]\u2588\u2580\u2588 \u2588 \u2580\u2588  \u2588  \u2588\u2584\u2588 \u2588 \u2580\u2588[/]",
+        f"[{g}]    \u2590   \u2590[/]",
+        f"[{g}] {'━' * 40}[/]",
+        f" v{__version__}",
+    ]
 
-    # Left: provider choices
-    choices = Text()
-    choices.append("1 ", style="bold")
-    choices.append("MindsDB Cloud ", style="bold anton.cyan")
-    choices.append("(recommended)\n\n", style="anton.success")
-    choices.append("2 ", style="bold")
-    choices.append("Bring your own key\n", style="anton.cyan")
-    choices.append("  Anthropic or OpenAI", style="anton.muted")
-
-    # Right: why Minds
-    info = Text()
-    info.append("MindsDB Cloud ", style="bold anton.cyan")
-    info.append("mdb.ai\n\n", style="anton.muted")
-    info.append("MindsDB is the maker of Anton\n", style="anton.muted")
-    info.append("and provides an LLM service\n", style="anton.muted")
-    info.append("optimized for Anton:\n\n", style="anton.muted")
-    info.append("  Smart model routing\n", style="")
-    info.append("  Faster responses\n", style="")
-    info.append("  Cost optimized", style="")
-
-    divider = Text("│\n│\n│\n│\n│\n│\n│\n│\n│\n│", style="anton.cyan_dim")
-    table.add_row(choices, divider, info)
+    for line in robot_lines:
+        console.print(line)
 
     console.print()
-    console.print(Panel(
-        table,
-        title="[bold anton.cyan]LLM Setup[/]",
-        border_style="anton.cyan_dim",
-        padding=(1, 2),
-    ))
+    console.print(
+        "[anton.cyan]Anton[/] is an autonomous AI coworker built by "
+        "[bold anton.cyan]MindsDB[/]."
+    )
+    console.print()
+    console.print(
+        "For the best experience, we recommend [bold anton.cyan]MindsDB Cloud[/] "
+        "[anton.muted](mdb.ai)[/]"
+    )
+    console.print(
+        "as your LLM provider. It is optimized for Anton with:"
+    )
+    console.print()
+    console.print("  [anton.success]\u2713[/] Smart model routing")
+    console.print("  [anton.success]\u2713[/] Faster responses")
+    console.print("  [anton.success]\u2713[/] Cost optimized")
+    console.print()
+
+    console.print(f"[{g}] {'━' * 40}[/]")
+    console.print()
+
+    console.print("  [bold]1[/]  [link=https://mdb.ai][anton.cyan]MindsDB Cloud[/][/link] [anton.success](recommended)[/]")
+    console.print("  [bold]2[/]  [anton.cyan]Bring your own key[/] [anton.muted]Anthropic / OpenAI[/]")
+    console.print()
 
     choice = Prompt.ask(
-        "[anton.cyan]>[/]",
+        "Choose LLM Provider",
         choices=["1", "2"],
         default="1",
         console=console,
-        show_choices=False,
-        show_default=False,
     )
 
     if choice == "1":
@@ -305,7 +306,7 @@ def _ensure_api_key(settings) -> None:
     else:
         _setup_other_provider(settings, ws)
 
-    # Reload env vars into the process so the scratchpad subprocess inherits them
+    # Reload env vars so the scratchpad subprocess inherits them
     ws.apply_env_to_process()
 
     # Summary
@@ -313,13 +314,11 @@ def _ensure_api_key(settings) -> None:
     provider_label = settings.planning_provider
     model_label = settings.planning_model
     if provider_label == "openai-compatible":
-        provider_label = "Minds"
-    summary = Text()
-    summary.append("  Provider  ", style="anton.muted")
-    summary.append(provider_label, style="anton.cyan")
-    summary.append("   Model  ", style="anton.muted")
-    summary.append(model_label, style="anton.cyan")
-    console.print(summary)
+        provider_label = "MindsDB Cloud"
+    console.print(
+        f"  [anton.muted]Provider[/]  [anton.cyan]{provider_label}[/]"
+        f"   [anton.muted]Model[/]  [anton.cyan]{model_label}[/]"
+    )
     console.print(f"  [anton.success]Ready.[/] [anton.muted]Saved to {ws.env_path}[/]")
     console.print()
 
