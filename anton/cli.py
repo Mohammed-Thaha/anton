@@ -250,10 +250,9 @@ def _onboard(settings) -> None:
     g = "anton.glow"
 
     _INTRO_LINES = [
-        "Hi! I'm Anton, an autonomous AI coworker built by MindsDB.",
+        "Hi! I'm Anton, an autonomous AI coworker.",
         "",
-        "For the best experience, I recommend MindsDB Cloud as your LLM Provider,",
-        "optimized for:",
+        "For the best experience, I recommend MindsDB-Cloud as your LLM Provider:",
         "",
         "  \u2713 Smart model routing",
         "  \u2713 Faster responses",
@@ -557,28 +556,25 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
 
 def _setup_other_provider(settings, ws) -> None:
     """Set up Anthropic or OpenAI as the LLM provider."""
-    from rich.prompt import Prompt
     from rich.text import Text
 
     console.print()
-    for label, idx in [("Anthropic (Claude)", "1"), ("OpenAI (GPT)", "2")]:
+    for label, idx in [("Anthropic", "1"), ("OpenAI", "2")]:
         line = Text()
         line.append(f"  {idx} ", style="bold")
         line.append(label, style="anton.cyan")
         console.print(line)
     console.print()
 
-    provider_choice = Prompt.ask(
-        "[anton.cyan]>[/]",
-        choices=["1", "2"],
-        console=console,
-        show_choices=False,
-    )
+    choice = _setup_prompt("Provider", default="Anthropic").strip().lower()
 
-    if provider_choice == "1":
+    if choice in ("1", "anthropic"):
         _setup_anthropic(settings, ws)
-    else:
+    elif choice in ("2", "openai"):
         _setup_openai(settings, ws)
+    else:
+        console.print(f"  [anton.warning]Unknown provider '{choice}', using Anthropic.[/]")
+        _setup_anthropic(settings, ws)
 
 
 def _validate_with_spinner(console, label: str, fn) -> None:
