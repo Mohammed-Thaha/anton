@@ -6,6 +6,7 @@ import os
 import re as _re
 import sys
 import uuid
+from warnings import deprecated
 import yaml as _yaml
 import time
 from collections.abc import AsyncIterator, Callable
@@ -1962,6 +1963,7 @@ def _display_value(key: str, value: str) -> str:
     return value or "[dim]<empty>[/]"
 
 
+@deprecated("The /data-connections menu is deprecated and will be removed in a future release.")
 async def _handle_data_connections(
     console: Console,
     settings: AntonSettings,
@@ -3600,9 +3602,6 @@ def _print_slash_help(console: Console) -> None:
     console.print("  [bold]/remove-data-source[/]     — Remove a saved connection")
     console.print("  [bold]/test-data-source[/]       — Test a saved connection")
     console.print(
-        "  [bold]/data-connections[/]       — View and manage stored keys and connections"
-    )
-    console.print(
         "  [bold]/setup[/]                  — Configure models or memory settings"
     )
     console.print("  [bold]/memory[/]                 — Show memory status dashboard")
@@ -4051,14 +4050,6 @@ async def _chat_loop(
                     arg = parts[1].strip() if len(parts) > 1 else ""
                     await _handle_test_datasource(
                         console, session._scratchpads, arg
-                    )
-                    continue
-                elif cmd == "/data-connections":
-                    session = await _handle_data_connections(
-                        console,
-                        settings,
-                        workspace,
-                        session,
                     )
                     continue
                 elif cmd == "/resume":
