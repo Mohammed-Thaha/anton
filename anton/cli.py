@@ -609,7 +609,7 @@ def _setup_other_provider(settings, ws) -> None:
         console.print(line)
     console.print()
 
-    choice = _setup_prompt("Provider", default="Anthropic").strip().lower()
+    choice = _setup_prompt("Provider", default="1").strip().lower()
 
     if choice in ("1", "anthropic"):
         _setup_anthropic(settings, ws)
