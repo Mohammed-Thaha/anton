@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import os
+import re as _re
 import sys
+import uuid
+import yaml as _yaml
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -40,6 +44,15 @@ from anton.tools import (
     format_cell_result,
     prepare_scratchpad_exec,
 )
+from anton.data_vault import DataVault, _slug_env_prefix
+from anton.datasource_registry import (
+    DatasourceEngine,
+    DatasourceField,
+    DatasourceRegistry,
+    _YAML_BLOCK_RE,
+)
+
+from rich.prompt import Confirm, Prompt
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -96,10 +109,15 @@ class ChatSession:
         self._console = console
         self._history: list[dict] = list(initial_history) if initial_history else []
         self._pending_memory_confirmations: list = []
-        self._turn_count = sum(1 for m in self._history if m.get("role") == "user") if initial_history else 0
+        self._turn_count = (
+            sum(1 for m in self._history if m.get("role") == "user")
+            if initial_history
+            else 0
+        )
         self._history_store = history_store
         self._session_id = session_id
         self._cancel_event = asyncio.Event()
+        self._active_datasource: str | None = None  # slug like "hubspot-2"
         self._scratchpads = ScratchpadManager(
             coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
@@ -135,17 +153,19 @@ class ChatSession:
         ]
         if not tool_ids:
             return
-        self._history.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tid,
-                    "content": "Cancelled by user.",
-                }
-                for tid in tool_ids
-            ],
-        })
+        self._history.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tid,
+                        "content": "Cancelled by user.",
+                    }
+                    for tid in tool_ids
+                ],
+            }
+        )
 
     def _persist_history(self) -> None:
         """Save current history to disk if a history store is configured."""
@@ -155,7 +175,9 @@ class ChatSession:
     async def _build_system_prompt(self, user_message: str = "") -> str:
         prompt = CHAT_SYSTEM_PROMPT.format(
             runtime_context=self._runtime_context,
-            visualizations_section=build_visualizations_prompt(self._proactive_dashboards),
+            visualizations_section=build_visualizations_prompt(
+                self._proactive_dashboards
+            ),
         )
         # Inject memory context (replaces old self_awareness)
         if self._cortex is not None:
@@ -172,31 +194,68 @@ class ChatSession:
             md_context = self._workspace.build_anton_md_context()
             if md_context:
                 prompt += md_context
+        # Inject connected datasource context without credentials
+        ds_ctx = _build_datasource_context(active_only=self._active_datasource)
+        if ds_ctx:
+            prompt += ds_ctx
         return prompt
 
     # Packages the LLM is most likely to care about when writing scratchpad code.
     _NOTABLE_PACKAGES: set[str] = {
-        "numpy", "pandas", "matplotlib", "seaborn", "scipy", "scikit-learn",
-        "requests", "httpx", "aiohttp", "beautifulsoup4", "lxml",
-        "pillow", "sympy", "networkx", "sqlalchemy", "pydantic",
-        "rich", "tqdm", "click", "fastapi", "flask", "django",
-        "openai", "anthropic", "tiktoken", "transformers", "torch",
-        "polars", "pyarrow", "openpyxl", "xlsxwriter",
-        "plotly", "bokeh", "altair",
-        "pytest", "hypothesis",
-        "yaml", "pyyaml", "toml", "tomli", "tomllib",
-        "jinja2", "markdown", "pygments",
-        "cryptography", "paramiko", "boto3",
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "seaborn",
+        "scipy",
+        "scikit-learn",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "beautifulsoup4",
+        "lxml",
+        "pillow",
+        "sympy",
+        "networkx",
+        "sqlalchemy",
+        "pydantic",
+        "rich",
+        "tqdm",
+        "click",
+        "fastapi",
+        "flask",
+        "django",
+        "openai",
+        "anthropic",
+        "tiktoken",
+        "transformers",
+        "torch",
+        "polars",
+        "pyarrow",
+        "openpyxl",
+        "xlsxwriter",
+        "plotly",
+        "bokeh",
+        "altair",
+        "pytest",
+        "hypothesis",
+        "yaml",
+        "pyyaml",
+        "toml",
+        "tomli",
+        "tomllib",
+        "jinja2",
+        "markdown",
+        "pygments",
+        "cryptography",
+        "paramiko",
+        "boto3",
     }
 
     def _build_tools(self) -> list[dict]:
         scratchpad_tool = dict(SCRATCHPAD_TOOL)
         pkg_list = self._scratchpads._available_packages
         if pkg_list:
-            notable = sorted(
-                p for p in pkg_list
-                if p.lower() in self._NOTABLE_PACKAGES
-            )
+            notable = sorted(p for p in pkg_list if p.lower() in self._NOTABLE_PACKAGES)
             if notable:
                 pkg_line = ", ".join(notable)
                 extra = f"\n\nInstalled packages ({len(pkg_list)} total, notable: {pkg_line})."
@@ -208,7 +267,9 @@ class ChatSession:
         if self._cortex is not None:
             wisdom = self._cortex.get_scratchpad_context()
             if wisdom:
-                scratchpad_tool["description"] += f"\n\nLessons from past sessions:\n{wisdom}"
+                scratchpad_tool[
+                    "description"
+                ] += f"\n\nLessons from past sessions:\n{wisdom}"
 
         tools = [scratchpad_tool]
         if self._cortex is not None:
@@ -216,6 +277,7 @@ class ChatSession:
         elif self._self_awareness is not None:
             # Legacy fallback
             from anton.tools import MEMORIZE_TOOL as _MT
+
             tools.append(_MT)
         if self._episodic is not None and self._episodic.enabled:
             tools.append(RECALL_TOOL)
@@ -253,8 +315,7 @@ class ChatSession:
             if not isinstance(content, list):
                 break
             has_tool_result = any(
-                isinstance(b, dict) and b.get("type") == "tool_result"
-                for b in content
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             )
             if not has_tool_result:
                 break
@@ -285,9 +346,13 @@ class ChatSession:
                         if block.get("type") == "text":
                             lines.append(f"[{role}]: {block['text'][:1000]}")
                         elif block.get("type") == "tool_use":
-                            lines.append(f"[{role}/tool_use]: {block.get('name', '')}({str(block.get('input', ''))[:500]})")
+                            lines.append(
+                                f"[{role}/tool_use]: {block.get('name', '')}({str(block.get('input', ''))[:500]})"
+                            )
                         elif block.get("type") == "tool_result":
-                            lines.append(f"[tool_result]: {str(block.get('content', ''))[:500]}")
+                            lines.append(
+                                f"[tool_result]: {str(block.get('content', ''))[:500]}"
+                            )
 
         old_text = "\n".join(lines)
         # Cap at ~8000 chars to avoid overloading the summarizer
@@ -320,7 +385,11 @@ class ChatSession:
         # If the recent portion starts with a user message, insert a minimal
         # assistant separator to avoid consecutive user messages (API error).
         if recent_turns and recent_turns[0].get("role") == "user":
-            self._history = [summary_msg, {"role": "assistant", "content": "Understood."}, *recent_turns]
+            self._history = [
+                summary_msg,
+                {"role": "assistant", "content": "Understood."},
+                *recent_turns,
+            ]
         else:
             self._history = [summary_msg] + recent_turns
 
@@ -367,15 +436,19 @@ class ChatSession:
         while response.tool_calls:
             tool_round += 1
             if tool_round > _MAX_TOOL_ROUNDS:
-                self._history.append({"role": "assistant", "content": response.content or ""})
-                self._history.append({
-                    "role": "user",
-                    "content": (
-                        f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
-                        "Stop retrying. Summarize what you accomplished and what failed, "
-                        "then tell the user what they can do to unblock the issue."
-                    ),
-                })
+                self._history.append(
+                    {"role": "assistant", "content": response.content or ""}
+                )
+                self._history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                            "Stop retrying. Summarize what you accomplished and what failed, "
+                            "then tell the user what they can do to unblock the issue."
+                        ),
+                    }
+                )
                 response = await self._llm.plan(
                     system=system,
                     messages=self._history,
@@ -387,12 +460,14 @@ class ChatSession:
             if response.content:
                 assistant_content.append({"type": "text", "text": response.content})
             for tc in response.tool_calls:
-                assistant_content.append({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.input,
-                })
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    }
+                )
             self._history.append({"role": "assistant", "content": assistant_content})
 
             # Process each tool call via registry
@@ -403,15 +478,21 @@ class ChatSession:
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
+                result_text = _scrub_credentials(result_text)
                 result_text = _apply_error_tracking(
-                    result_text, tc.name, error_streak, resilience_nudged,
+                    result_text,
+                    tc.name,
+                    error_streak,
+                    resilience_nudged,
                 )
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "content": result_text,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": result_text,
+                    }
+                )
 
             self._history.append({"role": "user", "content": tool_results})
 
@@ -446,13 +527,17 @@ class ChatSession:
 
         return reply
 
-    async def turn_stream(self, user_input: str | list[dict]) -> AsyncIterator[StreamEvent]:
+    async def turn_stream(
+        self, user_input: str | list[dict]
+    ) -> AsyncIterator[StreamEvent]:
         """Streaming version of turn(). Yields events as they arrive."""
         self._history.append({"role": "user", "content": user_input})
 
         # Log user input to episodic memory
         if self._episodic is not None:
-            content = user_input if isinstance(user_input, str) else str(user_input)[:2000]
+            content = (
+                user_input if isinstance(user_input, str) else str(user_input)[:2000]
+            )
             self._episodic.log_turn(self._turn_count + 1, "user", content)
 
         user_msg_str = user_input if isinstance(user_input, str) else ""
@@ -465,7 +550,9 @@ class ChatSession:
         # Log assistant response to episodic memory
         if self._episodic is not None and assistant_text_parts:
             self._episodic.log_turn(
-                self._turn_count + 1, "assistant", "".join(assistant_text_parts)[:2000],
+                self._turn_count + 1,
+                "assistant",
+                "".join(assistant_text_parts)[:2000],
             )
 
         # Identity extraction (Default Mode Network — every 5 turns)
@@ -477,7 +564,9 @@ class ChatSession:
             # Periodic memory vacuum (Systems Consolidation)
             self._cortex.maybe_vacuum()
 
-    async def _stream_and_handle_tools(self, user_message: str = "") -> AsyncIterator[StreamEvent]:
+    async def _stream_and_handle_tools(
+        self, user_message: str = ""
+    ) -> AsyncIterator[StreamEvent]:
         """Stream one LLM call, handle tool loops, yield all events."""
         system = await self._build_system_prompt(user_message)
         tools = self._build_tools()
@@ -520,7 +609,10 @@ class ChatSession:
         llm_response = response.response
 
         # Proactive compaction
-        if not _compacted_this_turn and llm_response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+        if (
+            not _compacted_this_turn
+            and llm_response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD
+        ):
             await self._summarize_history()
             self._compact_scratchpads()
             _compacted_this_turn = True
@@ -543,15 +635,19 @@ class ChatSession:
                 tool_round += 1
                 if tool_round > _MAX_TOOL_ROUNDS:
                     _max_rounds_hit = True
-                    self._history.append({"role": "assistant", "content": llm_response.content or ""})
-                    self._history.append({
-                        "role": "user",
-                        "content": (
-                            f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
-                            "Stop retrying. Summarize what you accomplished and what failed, "
-                            "then tell the user what they can do to unblock the issue."
-                        ),
-                    })
+                    self._history.append(
+                        {"role": "assistant", "content": llm_response.content or ""}
+                    )
+                    self._history.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                                "Stop retrying. Summarize what you accomplished and what failed, "
+                                "then tell the user what they can do to unblock the issue."
+                            ),
+                        }
+                    )
                     async for event in self._llm.plan_stream(
                         system=system,
                         messages=self._history,
@@ -562,15 +658,21 @@ class ChatSession:
                 # Build assistant message with content blocks
                 assistant_content: list[dict] = []
                 if llm_response.content:
-                    assistant_content.append({"type": "text", "text": llm_response.content})
+                    assistant_content.append(
+                        {"type": "text", "text": llm_response.content}
+                    )
                 for tc in llm_response.tool_calls:
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.input,
-                    })
-                self._history.append({"role": "assistant", "content": assistant_content})
+                    assistant_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.input,
+                        }
+                    )
+                self._history.append(
+                    {"role": "assistant", "content": assistant_content}
+                )
 
                 # Process each tool call
                 tool_results: list[dict] = []
@@ -579,7 +681,9 @@ class ChatSession:
                     if self._episodic is not None:
                         tc_desc = str(tc.input)[:2000]
                         self._episodic.log_turn(
-                            self._turn_count + 1, "tool_call", tc_desc,
+                            self._turn_count + 1,
+                            "tool_call",
+                            tc_desc,
                             tool=tc.name,
                         )
 
@@ -590,7 +694,13 @@ class ChatSession:
                             if isinstance(prep, str):
                                 result_text = prep
                             else:
-                                pad, code, description, estimated_time, estimated_seconds = prep
+                                (
+                                    pad,
+                                    code,
+                                    description,
+                                    estimated_time,
+                                    estimated_seconds,
+                                ) = prep
                                 # Signal intent + ETA before execution begins
                                 yield StreamTaskProgress(
                                     phase="scratchpad_start",
@@ -598,8 +708,10 @@ class ChatSession:
                                     eta_seconds=estimated_seconds,
                                 )
                                 import time as _time
+
                                 _sp_t0 = _time.monotonic()
                                 from anton.scratchpad import Cell
+
                                 cell = None
                                 async for item in pad.execute_streaming(
                                     code,
@@ -620,18 +732,26 @@ class ChatSession:
                                     message=description or "Done",
                                     eta_seconds=_sp_elapsed,
                                 )
-                                result_text = format_cell_result(cell) if cell else "No result produced."
+                                result_text = (
+                                    format_cell_result(cell)
+                                    if cell
+                                    else "No result produced."
+                                )
 
                                 # Log scratchpad cell to episodic memory
                                 if self._episodic is not None and cell is not None:
                                     self._episodic.log_turn(
-                                        self._turn_count + 1, "scratchpad",
+                                        self._turn_count + 1,
+                                        "scratchpad",
                                         (cell.stdout or "")[:2000],
                                         description=description,
                                     )
                         else:
                             result_text = await dispatch_tool(self, tc.name, tc.input)
-                            if tc.name == "scratchpad" and tc.input.get("action") == "dump":
+                            if (
+                                tc.name == "scratchpad"
+                                and tc.input.get("action") == "dump"
+                            ):
                                 yield StreamToolResult(content=result_text)
                                 result_text = (
                                     "The full notebook has been displayed to the user above. "
@@ -644,24 +764,34 @@ class ChatSession:
                     # Log tool result to episodic memory
                     if self._episodic is not None:
                         self._episodic.log_turn(
-                            self._turn_count + 1, "tool_result", result_text[:2000],
+                            self._turn_count + 1,
+                            "tool_result",
+                            result_text[:2000],
                             tool=tc.name,
                         )
 
+                    result_text = _scrub_credentials(result_text)
                     result_text = _apply_error_tracking(
-                        result_text, tc.name, error_streak, resilience_nudged,
+                        result_text,
+                        tc.name,
+                        error_streak,
+                        resilience_nudged,
                     )
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tc.id,
-                        "content": result_text,
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tc.id,
+                            "content": result_text,
+                        }
+                    )
 
                 self._history.append({"role": "user", "content": tool_results})
 
                 # Signal that tools are done and LLM is now analyzing
-                yield StreamTaskProgress(phase="analyzing", message="Analyzing results...")
+                yield StreamTaskProgress(
+                    phase="analyzing", message="Analyzing results..."
+                )
 
                 # Stream follow-up
                 response = None
@@ -696,7 +826,11 @@ class ChatSession:
                 llm_response = response.response
 
                 # Proactive compaction during tool loop
-                if not _compacted_this_turn and llm_response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+                if (
+                    not _compacted_this_turn
+                    and llm_response.usage.context_pressure
+                    > _CONTEXT_PRESSURE_THRESHOLD
+                ):
                     await self._summarize_history()
                     self._compact_scratchpads()
                     _compacted_this_turn = True
@@ -716,18 +850,20 @@ class ChatSession:
 
             if continuation >= _MAX_CONTINUATIONS:
                 # Budget exhausted — ask LLM to diagnose and present to user
-                self._history.append({
-                    "role": "user",
-                    "content": (
-                        "SYSTEM: You have attempted to complete this task multiple times "
-                        "but verification indicates it is still not done. Do NOT try again. "
-                        "Instead:\n"
-                        "1. Summarize exactly what was accomplished so far.\n"
-                        "2. Identify the specific blocker or failure preventing completion.\n"
-                        "3. Suggest concrete next steps the user can take to unblock this.\n"
-                        "Be honest and specific — do not be vague about what went wrong."
-                    ),
-                })
+                self._history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "SYSTEM: You have attempted to complete this task multiple times "
+                            "but verification indicates it is still not done. Do NOT try again. "
+                            "Instead:\n"
+                            "1. Summarize exactly what was accomplished so far.\n"
+                            "2. Identify the specific blocker or failure preventing completion.\n"
+                            "3. Suggest concrete next steps the user can take to unblock this.\n"
+                            "Be honest and specific — do not be vague about what went wrong."
+                        ),
+                    }
+                )
                 yield StreamTaskProgress(
                     phase="analyzing", message="Diagnosing incomplete task..."
                 )
@@ -742,13 +878,15 @@ class ChatSession:
             # Ask the LLM to self-assess completion.
             # Use a copy of history with a trailing user message so models
             # that don't support assistant-prefill won't reject the request.
-            verify_messages = list(self._history) + [{
-                "role": "user",
-                "content": (
-                    "SYSTEM: Evaluate whether the task the user originally requested "
-                    "has been fully completed based on the conversation above."
-                ),
-            }]
+            verify_messages = list(self._history) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "SYSTEM: Evaluate whether the task the user originally requested "
+                        "has been fully completed based on the conversation above."
+                    ),
+                }
+            ]
             verification = await self._llm.plan(
                 system=(
                     "You are a task-completion verifier. Given the conversation, determine "
@@ -774,15 +912,17 @@ class ChatSession:
             if "STATUS: STUCK" in status_text:
                 # Stuck — inject diagnosis request and let the LLM explain
                 reason = (verification.content or "").strip()
-                self._history.append({
-                    "role": "user",
-                    "content": (
-                        f"SYSTEM: Task verification determined this task is stuck.\n"
-                        f"Verifier assessment: {reason}\n\n"
-                        "Explain to the user what went wrong, what you tried, and "
-                        "suggest specific next steps they can take to unblock this."
-                    ),
-                })
+                self._history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"SYSTEM: Task verification determined this task is stuck.\n"
+                            f"Verifier assessment: {reason}\n\n"
+                            "Explain to the user what went wrong, what you tried, and "
+                            "suggest specific next steps they can take to unblock this."
+                        ),
+                    }
+                )
                 yield StreamTaskProgress(
                     phase="analyzing", message="Diagnosing blocked task..."
                 )
@@ -796,16 +936,18 @@ class ChatSession:
             # INCOMPLETE — continue working
             continuation += 1
             reason = (verification.content or "").strip()
-            self._history.append({
-                "role": "user",
-                "content": (
-                    f"SYSTEM: Task verification determined this task is not yet complete "
-                    f"(attempt {continuation}/{_MAX_CONTINUATIONS}).\n"
-                    f"Verifier assessment: {reason}\n\n"
-                    "Continue working on the original request. Pick up where you left off "
-                    "and finish the remaining work. Do not repeat work already done."
-                ),
-            })
+            self._history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: Task verification determined this task is not yet complete "
+                        f"(attempt {continuation}/{_MAX_CONTINUATIONS}).\n"
+                        f"Verifier assessment: {reason}\n\n"
+                        "Continue working on the original request. Pick up where you left off "
+                        "and finish the remaining work. Do not repeat work already done."
+                    ),
+                }
+            )
             yield StreamTaskProgress(
                 phase="analyzing",
                 message=f"Task incomplete — continuing ({continuation}/{_MAX_CONTINUATIONS})...",
@@ -897,6 +1039,147 @@ def _apply_error_tracking(
     return result_text
 
 
+# DS_* var names whose values are known to be secret (passwords, tokens, keys).
+# Populated at startup and after each successful connect.
+_DS_SECRET_VARS: set[str] = set()
+
+# DS_* var names for **ALL** fields of registered engines.
+_DS_KNOWN_VARS: set[str] = set()
+
+
+def _reset_registered_ds_vars() -> None:
+    """Clear the DS_* var registries so they can be rebuilt from current vault state."""
+    _DS_SECRET_VARS.clear()
+    _DS_KNOWN_VARS.clear()
+
+
+def parse_connection_slug(
+    slug: str,
+    known_engines: list[str],
+    *,
+    vault: DataVault | None = None,
+) -> tuple[str, str] | None:
+    """Split a connection slug into (engine, name) using longest-prefix matching.
+
+    First tries each known registry engine longest-first so that 'sql-server-prod-db' is
+    correctly parsed as engine='sql-server', name='prod-db' rather than
+    engine='sql', name='server-prod-db'.
+
+    If nothing matches and a vault is supplied, falls back to scanning vault
+    connections for an exact slug match — handles custom/unregistered engines.
+
+    Returns None if no match found or name part is empty.
+    """
+    for engine in sorted(known_engines, key=len, reverse=True):
+        prefix = engine + "-"
+        if slug.startswith(prefix) and len(slug) > len(prefix):
+            return (engine, slug[len(prefix):])
+
+    if vault is not None:
+        for conn in vault.list_connections():
+            if f"{conn['engine']}-{conn['name']}" == slug:
+                return (conn["engine"], conn["name"])
+
+    return None
+
+
+def _register_secret_vars(
+    engine_def: "DatasourceEngine", *, engine: str = "", name: str = ""
+) -> None:
+    """Record which DS_* var names correspond to known/secret fields for engine_def.
+
+    If engine and name are given, registers namespaced vars (DS_ENGINE_NAME__FIELD).
+    Otherwise registers flat vars (DS_FIELD) — for temporary test_snippet execution.
+    """
+    all_fields = list(engine_def.fields)
+    for am in engine_def.auth_methods or []:
+        all_fields.extend(am.fields)
+    for f in all_fields:
+        if engine and name:
+            prefix = _slug_env_prefix(engine, name)
+            key = f"{prefix}__{f.name.upper()}"
+        else:
+            key = f"DS_{f.name.upper()}"
+        _DS_KNOWN_VARS.add(key)
+        if f.secret:
+            _DS_SECRET_VARS.add(key)
+
+
+def _scrub_credentials(text: str) -> str:
+    """Remove secret DS_* values from scratchpad output before it reaches the LLM.
+
+    Only redacts vars registered as secret via _register_secret_vars (driven by
+    DatasourceField.secret=true in datasources.md).  Non-secret fields of known
+    engines (DS_HOST, DS_PORT, DS_BASE_URL, …) are left readable so the LLM can
+    reason about connection errors.  For truly unknown DS_* vars (custom engines
+    not yet in the registry) the fallback scrubs any long value — conservative
+    but safe.
+    """
+    for key in _DS_SECRET_VARS:
+        value = os.environ.get(key, "")
+        if not value:
+            continue
+        text = text.replace(value, f"[{key}]")
+    for key, value in os.environ.items():
+        if not key.startswith("DS_") or key in _DS_KNOWN_VARS:
+            continue
+        # Length guard only for unknown DS_* vars (not registered secrets).
+        # Unknown vars are matched heuristically — a short value like "on"
+        # or "true" in a DS_ENABLE_X var should not be scrubbed.
+        # Registered secret vars bypass this check entirely.
+        if not value or len(value) <= 8:
+            continue
+        text = text.replace(value, f"[{key}]")
+    return text
+
+
+def _build_datasource_context(active_only: str | None = None) -> str:
+    """Build a system-prompt section listing available DS_* env vars by name.
+
+    Shows the LLM what data sources are connected and which environment
+    variable names to use — without exposing any credential values.
+
+    If active_only is set, only the matching slug is included.
+    """
+    try:
+        vault = DataVault()
+        conns = vault.list_connections()
+    except Exception:
+        return ""
+    if not conns:
+        return ""
+    lines = ["\n\n## Connected Data Sources"]
+    lines.append(
+        "Credentials are pre-injected as namespaced DS_<ENGINE_NAME>__<FIELD> "
+        "environment variables. Use them directly in scratchpad code "
+        "(e.g. DS_POSTGRES_PROD_DB__HOST). "
+        "Never read ~/.anton/data_vault/ files directly.\n"
+    )
+    for c in conns:
+        slug = f"{c['engine']}-{c['name']}"
+        if active_only and slug != active_only:
+            continue
+        fields = vault.load(c["engine"], c["name"]) or {}
+        prefix = _slug_env_prefix(c["engine"], c["name"])
+        var_names = ", ".join(f"{prefix}__{k.upper()}" for k in fields)
+        lines.append(f"- `{slug}` ({c['engine']}) → {var_names}")
+    return "\n".join(lines)
+
+
+def _restore_namespaced_env(vault: DataVault) -> None:
+    """Clear all DS_* vars, then reinject every saved connection as namespaced."""
+    from anton.datasource_registry import DatasourceRegistry
+
+    _reset_registered_ds_vars()
+    vault.clear_ds_env()
+    dreg = DatasourceRegistry()
+    for conn in vault.list_connections():
+        vault.inject_env(conn["engine"], conn["name"])  # flat=False by default
+        edef = dreg.get(conn["engine"])
+        if edef is not None:
+            _register_secret_vars(edef, engine=conn["engine"], name=conn["name"])
+
+
 def _build_runtime_context(settings: AntonSettings) -> str:
     """Build runtime context string including Minds datasource info if configured."""
     ctx = (
@@ -906,15 +1189,16 @@ def _build_runtime_context(settings: AntonSettings) -> str:
         f"- Workspace: {settings.workspace_path}\n"
         f"- Memory mode: {settings.memory_mode}"
     )
-    if settings.minds_api_key and (settings.minds_mind_name or settings.minds_datasource):
+    if settings.minds_api_key and (
+        settings.minds_mind_name or settings.minds_datasource
+    ):
         engine = settings.minds_datasource_engine or "unknown"
         ctx += f"\n\n**CONNECTED MIND (Minds):**\n"
         if settings.minds_mind_name:
             ctx += f"- Mind: {settings.minds_mind_name}\n"
         if settings.minds_datasource:
             ctx += (
-                f"- Datasource: {settings.minds_datasource}\n"
-                f"- Engine: {engine}\n"
+                f"- Datasource: {settings.minds_datasource}\n" f"- Engine: {engine}\n"
             )
         ctx += (
             f"- Minds URL: {settings.minds_url}\n"
@@ -956,7 +1240,8 @@ def _rebuild_session(
 
     runtime_context = _build_runtime_context(settings)
     api_key = (
-        settings.anthropic_api_key if settings.coding_provider == "anthropic"
+        settings.anthropic_api_key
+        if settings.coding_provider == "anthropic"
         else settings.openai_api_key
     ) or ""
     return ChatSession(
@@ -1006,17 +1291,34 @@ def _handle_memory(
         identity = hc.recall_identity()
         rules = hc.recall_rules()
         lessons_raw = hc._read_full_lessons()
-        rule_count = sum(1 for ln in rules.splitlines() if ln.strip().startswith("- ")) if rules else 0
-        lesson_count = sum(1 for ln in lessons_raw.splitlines() if ln.strip().startswith("- ")) if lessons_raw else 0
+        rule_count = (
+            sum(1 for ln in rules.splitlines() if ln.strip().startswith("- "))
+            if rules
+            else 0
+        )
+        lesson_count = (
+            sum(1 for ln in lessons_raw.splitlines() if ln.strip().startswith("- "))
+            if lessons_raw
+            else 0
+        )
         topics: list[str] = []
         if hc._topics_dir.is_dir():
-            topics = [p.stem for p in sorted(hc._topics_dir.iterdir()) if p.suffix == ".md"]
+            topics = [
+                p.stem for p in sorted(hc._topics_dir.iterdir()) if p.suffix == ".md"
+            ]
 
         console.print(f"  [anton.cyan]{label}[/] [dim]({hc._dir})[/]")
         if identity:
-            entries = [ln.strip()[2:] for ln in identity.splitlines() if ln.strip().startswith("- ")]
+            entries = [
+                ln.strip()[2:]
+                for ln in identity.splitlines()
+                if ln.strip().startswith("- ")
+            ]
             if entries:
-                console.print(f"    Identity:  {', '.join(entries[:3])}" + (" ..." if len(entries) > 3 else ""))
+                console.print(
+                    f"    Identity:  {', '.join(entries[:3])}"
+                    + (" ..." if len(entries) > 3 else "")
+                )
             else:
                 console.print("    Identity:  [dim](set)[/]")
         else:
@@ -1147,7 +1449,9 @@ async def _handle_resume(
     new_session._turn_count = sum(1 for m in history if m.get("role") == "user")
 
     console.print()
-    console.print(f"[anton.success]Resumed session from {selected['date']} ({selected['turns']} turns)[/]")
+    console.print(
+        f"[anton.success]Resumed session from {selected['date']} ({selected['turns']} turns)[/]"
+    )
     console.print()
 
     return new_session, sid
@@ -1189,9 +1493,16 @@ async def _handle_setup(
         return session
     elif top_choice == "1":
         return await _handle_setup_models(
-            console, settings, workspace, state,
-            self_awareness, cortex, session, episodic=episodic,
-            history_store=history_store, session_id=session_id,
+            console,
+            settings,
+            workspace,
+            state,
+            self_awareness,
+            cortex,
+            session,
+            episodic=episodic,
+            history_store=history_store,
+            session_id=session_id,
         )
     else:
         _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
@@ -1214,103 +1525,89 @@ async def _handle_setup_models(
     from rich.prompt import Prompt
 
     from anton.workspace import Workspace as _Workspace
+    from anton.cli import _SetupRetry, _setup_minds, _setup_other_provider
 
     # Always persist API keys and model settings to global ~/.anton/.env
     global_ws = _Workspace(Path.home())
 
+    def _provider_label(provider: str) -> str:
+        if provider == "openai-compatible":
+            if settings.minds_url and "mdb.ai" in settings.minds_url:
+                return "Minds-Cloud"
+            return "Minds-Enterprise"
+        return provider.capitalize()
+
+    def _model_label(model: str, role: str) -> str:
+        if model in ("_reason_", "_code_"):
+            return f"smart_router({role})"
+        return model
+
+    provider_display = _provider_label(settings.planning_provider)
+    planning_display = _model_label(settings.planning_model, "planning")
+    coding_display = _model_label(settings.coding_model, "coding")
+
     console.print()
     console.print("[anton.cyan]Current configuration:[/]")
-    console.print(f"  Provider (planning): [bold]{settings.planning_provider}[/]")
-    console.print(f"  Provider (coding):   [bold]{settings.coding_provider}[/]")
-    console.print(f"  Planning model:      [bold]{settings.planning_model}[/]")
-    console.print(f"  Coding model:        [bold]{settings.coding_model}[/]")
+    console.print(f"  Provider: [bold]{provider_display}[/]")
+    if planning_display == coding_display:
+        console.print(f"  Model:    [bold]{planning_display}[/]")
+    else:
+        console.print(f"  Planning: [bold]{planning_display}[/]")
+        console.print(f"  Coding:   [bold]{coding_display}[/]")
     console.print()
 
     # --- Provider ---
     providers = {"1": "anthropic", "2": "openai", "3": "openai-compatible"}
-    current_num = {"anthropic": "1", "openai": "2", "openai-compatible": "3"}.get(settings.planning_provider, "1")
-    console.print("[anton.cyan]Available providers:[/]")
-    console.print(r"  [bold]1[/]  Anthropic (Claude)                    [dim]\[recommended][/]")
-    console.print(r"  [bold]2[/]  OpenAI (GPT / o-series)               [dim]\[experimental][/]")
-    console.print(r"  [bold]3[/]  OpenAI-compatible (custom endpoint)   [dim]\[experimental][/]")
-    console.print()
-
-    choice = Prompt.ask(
-        "Select provider",
-        choices=["1", "2", "3"],
-        default=current_num,
-        console=console,
+    current_num = {"anthropic": "1", "openai": "2", "openai-compatible": "3"}.get(
+        settings.planning_provider, "1"
     )
-    provider = providers[choice]
+    console.print("[anton.cyan]Available providers:[/]")
+    console.print(
+        r"  [bold]1[/]  Anthropic (Claude)                    [dim]\[recommended][/]"
+    )
+    console.print(
+        r"  [bold]2[/]  OpenAI (GPT / o-series)               [dim]\[experimental][/]"
+    )
+    console.print(
+        r"  [bold]3[/]  OpenAI-compatible (custom endpoint)   [dim]\[experimental][/]"
+    )
+    console.print()
+    # Use the same onboarding flow from cli.py
 
-    # --- Base URL (OpenAI-compatible only) ---
-    if provider == "openai-compatible":
-        current_base_url = settings.openai_base_url or ""
+    def _print_choices():
+        console.print("  [bold]1[/]  [link=https://mdb.ai][anton.cyan]Minds-Cloud[/][/link] [anton.success](recommended)[/]")
+        console.print("  [bold]2[/]  [anton.cyan]Minds-Enterprise Server[/]")
+        console.print("  [bold]3[/]  [anton.cyan]Bring your own key[/] [anton.muted]Anthropic / OpenAI[/]")
+        console.print("  [bold]q[/]  [anton.muted]Back[/]")
         console.print()
-        base_url = Prompt.ask(
-            f"API base URL [dim](e.g. http://localhost:11434/v1)[/]",
-            default=current_base_url,
+
+    _print_choices()
+
+    while True:
+        choice = Prompt.ask(
+            "Choose LLM Provider",
+            choices=["1", "2", "3", "q"],
+            default="q",
             console=console,
         )
-        base_url = base_url.strip()
-        if base_url:
-            settings.openai_base_url = base_url
-            global_ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
 
-    # --- API key ---
-    key_attr = "anthropic_api_key" if provider == "anthropic" else "openai_api_key"
-    current_key = getattr(settings, key_attr) or ""
-    masked = current_key[:4] + "..." + current_key[-4:] if len(current_key) > 8 else "***"
-    console.print()
-    api_key = Prompt.ask(
-        f"API key for {provider.title()} [dim](Enter to keep {masked})[/]",
-        default="",
-        console=console,
-    )
-    api_key = api_key.strip()
+        if choice == "q":
+            return session
 
-    # --- Models ---
-    defaults = {
-        "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
-        "openai": ("gpt-5-mini", "gpt-5-nano"),
-    }
-    default_planning, default_coding = defaults.get(provider, ("", ""))
+        try:
+            if choice == "1":
+                _setup_minds(settings, global_ws)
+            elif choice == "2":
+                _setup_minds(settings, global_ws, default_url=None)
+            else:
+                _setup_other_provider(settings, global_ws)
+            break
+        except _SetupRetry:
+            console.print()
+            _print_choices()
+            continue
 
-    console.print()
-    planning_model = Prompt.ask(
-        "Planning model",
-        default=settings.planning_model if provider == settings.planning_provider else default_planning,
-        console=console,
-    )
-    coding_model = Prompt.ask(
-        "Coding model",
-        default=settings.coding_model if provider == settings.coding_provider else default_coding,
-        console=console,
-    )
-
-    # --- Persist to global ~/.anton/.env ---
-    settings.planning_provider = provider
-    settings.coding_provider = provider
-    settings.planning_model = planning_model
-    settings.coding_model = coding_model
-
-    global_ws.set_secret("ANTON_PLANNING_PROVIDER", provider)
-    global_ws.set_secret("ANTON_CODING_PROVIDER", provider)
-    global_ws.set_secret("ANTON_PLANNING_MODEL", planning_model)
-    global_ws.set_secret("ANTON_CODING_MODEL", coding_model)
-
-    if api_key:
-        setattr(settings, key_attr, api_key)
-        key_name = f"ANTON_{provider.upper()}_API_KEY"
-        global_ws.set_secret(key_name, api_key)
-
-    # Validate that we actually have an API key for the chosen provider
-    final_key = getattr(settings, key_attr)
-    if not final_key:
-        console.print()
-        console.print(f"[anton.error]No API key set for {provider}. Configuration not applied.[/]")
-        console.print()
-        return session
+    global_ws.apply_env_to_process()
 
     console.print()
     console.print("[anton.success]Configuration updated.[/]")
@@ -1345,9 +1642,15 @@ def _handle_setup_memory(
 
     # --- Memory mode ---
     console.print("  Memory mode:")
-    console.print(r"    [bold]1[/]  Autopilot — Anton decides what to remember       [dim]\[recommended][/]")
-    console.print(r"    [bold]2[/]  Co-pilot — save obvious, confirm ambiguous        [dim]\[selective][/]")
-    console.print(r"    [bold]3[/]  Off — never save memory (still reads existing)    [dim]\[suppressed][/]")
+    console.print(
+        r"    [bold]1[/]  Autopilot — Anton decides what to remember       [dim]\[recommended][/]"
+    )
+    console.print(
+        r"    [bold]2[/]  Co-pilot — save obvious, confirm ambiguous        [dim]\[selective][/]"
+    )
+    console.print(
+        r"    [bold]3[/]  Off — never save memory (still reads existing)    [dim]\[suppressed][/]"
+    )
     console.print()
 
     mode_map = {"1": "autopilot", "2": "copilot", "3": "off"}
@@ -1370,7 +1673,9 @@ def _handle_setup_memory(
     if episodic is not None:
         console.print()
         ep_status = "ON" if episodic.enabled else "OFF"
-        console.print(f"  Episodic memory (conversation archive): Currently [bold]{ep_status}[/]")
+        console.print(
+            f"  Episodic memory (conversation archive): Currently [bold]{ep_status}[/]"
+        )
         toggle = Prompt.ask(
             "  Toggle episodic memory? (y/n)",
             choices=["y", "n"],
@@ -1381,7 +1686,9 @@ def _handle_setup_memory(
             new_state = not episodic.enabled
             episodic.enabled = new_state
             settings.episodic_memory = new_state
-            workspace.set_secret("ANTON_EPISODIC_MEMORY", "true" if new_state else "false")
+            workspace.set_secret(
+                "ANTON_EPISODIC_MEMORY", "true" if new_state else "false"
+            )
             console.print(f"  Episodic memory: [bold]{'ON' if new_state else 'OFF'}[/]")
 
     console.print()
@@ -1464,7 +1771,10 @@ def _describe_minds_connection_error(err: Exception) -> tuple[str, str]:
                 "Connection failed during TLS certificate verification.",
                 "Common reasons: a self-signed, expired, or otherwise untrusted certificate.",
             )
-        if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+        if (
+            isinstance(reason, (TimeoutError, socket.timeout))
+            or "timed out" in str(reason).lower()
+        ):
             return (
                 "Connection failed because the request timed out.",
                 "Common reasons: the server is slow or unavailable, the URL is wrong, or there is a network path issue.",
@@ -1507,7 +1817,10 @@ def _minds_request(
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
     # Browser-like headers to avoid Cloudflare bot detection
-    req.add_header("User-Agent", "Mozilla/5.0 (compatible; Anton/1.0; +https://github.com/mindsdb/anton)")
+    req.add_header(
+        "User-Agent",
+        "Mozilla/5.0 (compatible; Anton/1.0; +https://github.com/mindsdb/anton)",
+    )
     req.add_header("Accept-Language", "en-US,en;q=0.9")
     req.add_header("Accept-Encoding", "identity")
     req.add_header("Connection", "keep-alive")
@@ -1535,7 +1848,9 @@ def _minds_list_minds(base_url: str, api_key: str, verify: bool = True) -> list[
     return data.get("minds", data if isinstance(data, list) else [])
 
 
-def _minds_get_mind(base_url: str, api_key: str, mind_name: str, verify: bool = True) -> dict | None:
+def _minds_get_mind(
+    base_url: str, api_key: str, mind_name: str, verify: bool = True
+) -> dict | None:
     """Fetch a single mind's details from a Minds server."""
     import json as _json
 
@@ -1578,7 +1893,9 @@ def _minds_refresh_knowledge(settings: AntonSettings, cortex) -> None:
     cortex.project_hc._encode_with_lock(topic_path, topic_content, mode="write")
 
 
-def _minds_list_datasources(base_url: str, api_key: str, verify: bool = True) -> list[dict]:
+def _minds_list_datasources(
+    base_url: str, api_key: str, verify: bool = True
+) -> list[dict]:
     """Fetch datasource list from a Minds server using stdlib urllib."""
     import json as _json
 
@@ -1597,11 +1914,13 @@ def _minds_test_llm(base_url: str, api_key: str, verify: bool = True) -> bool:
     import json as _json
 
     url = f"{base_url}/api/v1/chat/completions"
-    payload = _json.dumps({
-        "model": "_code_",
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-    }).encode()
+    payload = _json.dumps(
+        {
+            "model": "_code_",
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+    ).encode()
 
     try:
         _minds_request(url, api_key, method="POST", payload=payload, verify=verify)
@@ -1611,14 +1930,22 @@ def _minds_test_llm(base_url: str, api_key: str, verify: bool = True) -> bool:
 
 
 _MINDS_KEYS = {
-    "ANTON_MINDS_API_KEY", "ANTON_MINDS_URL", "ANTON_MINDS_MIND_NAME",
-    "ANTON_MINDS_DATASOURCE", "ANTON_MINDS_DATASOURCE_ENGINE", "ANTON_MINDS_SSL_VERIFY",
+    "ANTON_MINDS_API_KEY",
+    "ANTON_MINDS_URL",
+    "ANTON_MINDS_MIND_NAME",
+    "ANTON_MINDS_DATASOURCE",
+    "ANTON_MINDS_DATASOURCE_ENGINE",
+    "ANTON_MINDS_SSL_VERIFY",
 }
 
 _LLM_KEYS = {
-    "ANTON_PLANNING_PROVIDER", "ANTON_CODING_PROVIDER",
-    "ANTON_PLANNING_MODEL", "ANTON_CODING_MODEL",
-    "ANTON_ANTHROPIC_API_KEY", "ANTON_OPENAI_API_KEY", "ANTON_OPENAI_BASE_URL",
+    "ANTON_PLANNING_PROVIDER",
+    "ANTON_CODING_PROVIDER",
+    "ANTON_PLANNING_MODEL",
+    "ANTON_CODING_MODEL",
+    "ANTON_ANTHROPIC_API_KEY",
+    "ANTON_OPENAI_API_KEY",
+    "ANTON_OPENAI_BASE_URL",
 }
 
 _SECRET_PATTERNS = ("KEY", "TOKEN", "SECRET", "PAT", "PASSWORD")
@@ -1635,6 +1962,7 @@ def _display_value(key: str, value: str) -> str:
     return value or "[dim]<empty>[/]"
 
 
+#TODO: The /data-connections menu is deprecated and will be removed in a future release.
 async def _handle_data_connections(
     console: Console,
     settings: AntonSettings,
@@ -1642,7 +1970,7 @@ async def _handle_data_connections(
     session: ChatSession,
 ) -> ChatSession:
     """View and manage stored keys and connections across global and project vaults."""
-    from rich.prompt import Confirm, Prompt
+    from rich.prompt import Prompt
 
     from anton.workspace import Workspace as _Workspace
 
@@ -1653,7 +1981,9 @@ async def _handle_data_connections(
 
     # Merge with source tags: project keys override global for display,
     # but we track where each lives for writes/removals.
-    all_keys: dict[str, tuple[str, str, str]] = {}  # key -> (value, source, scope_label)
+    all_keys: dict[str, tuple[str, str, str]] = (
+        {}
+    )  # key -> (value, source, scope_label)
     for k, v in global_env.items():
         all_keys[k] = (v, "global", "~/.anton/.env")
     for k, v in project_env.items():
@@ -1663,7 +1993,9 @@ async def _handle_data_connections(
 
     if not all_keys:
         console.print("[anton.warning]No connections or secrets configured.[/]")
-        console.print("[anton.muted]Use /connect to set up a Minds connection, or ask Anton to store a key.[/]")
+        console.print(
+            "[anton.muted]Use /connect to set up a Minds connection, or ask Anton to store a key.[/]"
+        )
         console.print()
         return session
 
@@ -1671,7 +2003,11 @@ async def _handle_data_connections(
         """Print grouped key table and return flat list for menu selection."""
         minds = {k: all_keys[k] for k in sorted(all_keys) if k in _MINDS_KEYS}
         llm = {k: all_keys[k] for k in sorted(all_keys) if k in _LLM_KEYS}
-        other = {k: all_keys[k] for k in sorted(all_keys) if k not in _MINDS_KEYS and k not in _LLM_KEYS}
+        other = {
+            k: all_keys[k]
+            for k in sorted(all_keys)
+            if k not in _MINDS_KEYS and k not in _LLM_KEYS
+        }
 
         flat: list[tuple[str, str, str, str]] = []  # (key, value, source, scope_label)
         idx = 1
@@ -1679,7 +2015,9 @@ async def _handle_data_connections(
         if minds:
             console.print("[anton.cyan]Minds Connection[/]")
             for k, (v, src, lbl) in minds.items():
-                console.print(f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]")
+                console.print(
+                    f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]"
+                )
                 flat.append((k, v, src, lbl))
                 idx += 1
             console.print()
@@ -1687,7 +2025,9 @@ async def _handle_data_connections(
         if llm:
             console.print("[anton.cyan]LLM Configuration[/]")
             for k, (v, src, lbl) in llm.items():
-                console.print(f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]")
+                console.print(
+                    f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]"
+                )
                 flat.append((k, v, src, lbl))
                 idx += 1
             console.print()
@@ -1695,7 +2035,9 @@ async def _handle_data_connections(
         if other:
             console.print("[anton.cyan]Other Integrations[/]")
             for k, (v, src, lbl) in other.items():
-                console.print(f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]")
+                console.print(
+                    f"    [bold]{idx}[/]  {k} = {_display_value(k, v)}  [dim]({lbl})[/]"
+                )
                 flat.append((k, v, src, lbl))
                 idx += 1
             console.print()
@@ -1713,7 +2055,9 @@ async def _handle_data_connections(
         console.print("  [bold]q[/]  Back")
         console.print()
 
-        action = Prompt.ask("Select", choices=["1", "2", "3", "q"], default="q", console=console)
+        action = Prompt.ask(
+            "Select", choices=["1", "2", "3", "q"], default="q", console=console
+        )
 
         if action == "q":
             console.print()
@@ -1772,7 +2116,9 @@ async def _handle_data_connections(
                 continue
 
             key, _, src, lbl = flat[pick_idx]
-            if not Confirm.ask(f"Remove {key} from {lbl}?", default=False, console=console):
+            if not Confirm.ask(
+                f"Remove {key} from {lbl}?", default=False, console=console
+            ):
                 console.print("[anton.muted]Cancelled.[/]")
                 console.print()
                 continue
@@ -1786,14 +2132,20 @@ async def _handle_data_connections(
         elif action == "3":
             # --- Add ---
             console.print()
-            new_key = Prompt.ask("Key name (e.g. HUBSPOT_API_KEY)", console=console).strip()
+            new_key = Prompt.ask(
+                "Key name (e.g. HUBSPOT_API_KEY)", console=console
+            ).strip()
             if not new_key:
                 console.print("[anton.warning]Key name cannot be empty.[/]")
                 console.print()
                 continue
 
             if new_key in all_keys:
-                if not Confirm.ask(f"{new_key} already exists. Overwrite?", default=False, console=console):
+                if not Confirm.ask(
+                    f"{new_key} already exists. Overwrite?",
+                    default=False,
+                    console=console,
+                ):
                     console.print("[anton.muted]Cancelled.[/]")
                     console.print()
                     continue
@@ -1816,7 +2168,11 @@ async def _handle_data_connections(
                 console=console,
             )
             target_ws = global_ws if scope == "global" else workspace
-            scope_label = "~/.anton/.env" if scope == "global" else f"{workspace.base}/.anton/.env"
+            scope_label = (
+                "~/.anton/.env"
+                if scope == "global"
+                else f"{workspace.base}/.anton/.env"
+            )
             target_ws.set_secret(new_key, new_val)
             target_ws.apply_env_to_process()
             all_keys[new_key] = (new_val, scope, scope_label)
@@ -1924,7 +2280,11 @@ async def _handle_connect(
         name = mind.get("name", "?")
         ds_list = mind.get("datasources", [])
         ds_count = len(ds_list)
-        ds_label = f"{ds_count} datasource{'s' if ds_count != 1 else ''}" if ds_count else "no datasources"
+        ds_label = (
+            f"{ds_count} datasource{'s' if ds_count != 1 else ''}"
+            if ds_count
+            else "no datasources"
+        )
         console.print(f"    [bold]{i}[/]  {name} [dim]({ds_label})[/]")
     console.print()
 
@@ -1958,7 +2318,9 @@ async def _handle_connect(
     # --- Resolve engine type from datasources list ---
     if ds_name:
         try:
-            all_datasources = _minds_list_datasources(minds_url, api_key, verify=ssl_verify)
+            all_datasources = _minds_list_datasources(
+                minds_url, api_key, verify=ssl_verify
+            )
             for ds in all_datasources:
                 if ds.get("name") == ds_name:
                     ds_engine = ds.get("engine", "unknown")
@@ -1992,7 +2354,9 @@ async def _handle_connect(
     llm_ok = _minds_test_llm(minds_url, api_key, verify=ssl_verify)
 
     if llm_ok:
-        console.print("[anton.success]LLM endpoints available — using Minds server as LLM provider.[/]")
+        console.print(
+            "[anton.success]LLM endpoints available — using Minds server as LLM provider.[/]"
+        )
         base_url = f"{minds_url.rstrip('/')}/api/v1"
         settings.openai_api_key = api_key
         settings.openai_base_url = base_url
@@ -2008,7 +2372,9 @@ async def _handle_connect(
         global_ws.set_secret("ANTON_CODING_MODEL", "_code_")
     else:
         # Check if Anthropic key is already configured
-        has_anthropic = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+        has_anthropic = settings.anthropic_api_key or os.environ.get(
+            "ANTHROPIC_API_KEY"
+        )
         if not has_anthropic:
             anthropic_key = Prompt.ask("Anthropic API key (for LLM)", console=console)
             if anthropic_key.strip():
@@ -2025,14 +2391,21 @@ async def _handle_connect(
                 global_ws.set_secret("ANTON_CODING_MODEL", "claude-haiku-4-5-20251001")
                 console.print("[anton.success]Anthropic API key saved.[/]")
             else:
-                console.print("[anton.warning]No API key provided — LLM calls will not work.[/]")
+                console.print(
+                    "[anton.warning]No API key provided — LLM calls will not work.[/]"
+                )
 
     global_ws.apply_env_to_process()
     console.print()
 
     return _rebuild_session(
-        settings=settings, state=state, self_awareness=self_awareness,
-        cortex=cortex, workspace=workspace, console=console, episodic=episodic,
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        cortex=cortex,
+        workspace=workspace,
+        console=console,
+        episodic=episodic,
     )
 
 
@@ -2068,30 +2441,55 @@ def _format_file_message(text: str, paths: list[Path], console: Console) -> str:
 
         # Skip very large files (>500KB) — just reference them
         if size > 512_000:
-            parts.append(f"\n<file path=\"{p}\">\n(File too large to inline — {_human_size(size)}. "
-                         f"Use the scratchpad to read it.)\n</file>")
+            parts.append(
+                f'\n<file path="{p}">\n(File too large to inline — {_human_size(size)}. '
+                f"Use the scratchpad to read it.)\n</file>"
+            )
             continue
 
         # Skip binary-looking files
-        if suffix in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
-                       ".pdf", ".zip", ".tar", ".gz", ".exe", ".dll", ".so",
-                       ".pyc", ".pyo", ".whl", ".egg", ".db", ".sqlite"):
-            parts.append(f"\n<file path=\"{p}\">\n(Binary file — {_human_size(size)}. "
-                         f"Use the scratchpad to process it.)\n</file>")
+        if suffix in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".ico",
+            ".webp",
+            ".pdf",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".exe",
+            ".dll",
+            ".so",
+            ".pyc",
+            ".pyo",
+            ".whl",
+            ".egg",
+            ".db",
+            ".sqlite",
+        ):
+            parts.append(
+                f'\n<file path="{p}">\n(Binary file — {_human_size(size)}. '
+                f"Use the scratchpad to process it.)\n</file>"
+            )
             continue
 
         try:
             content = p.read_text(errors="replace")
         except Exception:
-            parts.append(f"\n<file path=\"{p}\">\n(Could not read file.)\n</file>")
+            parts.append(f'\n<file path="{p}">\n(Could not read file.)\n</file>')
             continue
 
-        parts.append(f"\n<file path=\"{p}\">\n{content}\n</file>")
+        parts.append(f'\n<file path="{p}">\n{content}\n</file>')
 
     return "\n".join(parts)
 
 
-def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> list[dict]:
+def _format_clipboard_image_message(
+    uploaded: object, user_text: str = ""
+) -> list[dict]:
     """Build a multimodal LLM message for a clipboard image upload.
 
     Returns a list of content blocks (image + text) so the LLM can see
@@ -2100,7 +2498,11 @@ def _format_clipboard_image_message(uploaded: object, user_text: str = "") -> li
     """
     import base64
 
-    text = user_text.strip() if user_text else "I've pasted an image from my clipboard. Analyze it."
+    text = (
+        user_text.strip()
+        if user_text
+        else "I've pasted an image from my clipboard. Analyze it."
+    )
     text += (
         f"\n\nThe image is also saved at: {uploaded.path}\n"
         f"({uploaded.width}x{uploaded.height}, {_human_size(uploaded.size_bytes)}). "
@@ -2146,6 +2548,7 @@ async def _ensure_clipboard(console: Console) -> bool:
         return False
     console.print("[anton.muted]Installing Pillow...[/]")
     import subprocess
+
     proc = await asyncio.get_event_loop().run_in_executor(
         None,
         lambda: subprocess.run(
@@ -2168,7 +2571,9 @@ async def _ensure_clipboard(console: Console) -> bool:
             ),
         )
         if proc.returncode == 0:
-            console.print("[anton.success]Pillow installed. Clipboard is now available.[/]")
+            console.print(
+                "[anton.success]Pillow installed. Clipboard is now available.[/]"
+            )
             return True
         console.print("[anton.error]Failed to install Pillow.[/]")
         return False
@@ -2182,18 +2587,1045 @@ def _human_size(nbytes: int) -> str:
     return f"{nbytes:.1f}TB"
 
 
+def _remove_engine_block(text: str, slug: str) -> str:
+    """Return *text* with any YAML datasource block for *slug* removed."""
+    cleaned = []
+    prev = 0
+    for m in _YAML_BLOCK_RE.finditer(text):
+        try:
+            data = _yaml.safe_load(m.group(3))
+            is_dup = isinstance(data, dict) and str(data.get("engine", "")) == slug
+        except Exception:
+            is_dup = False
+        if is_dup:
+            pre = text[prev : m.start()].rstrip()
+            pre = _re.sub(r"\n---\s*$", "", pre)
+            cleaned.append(pre)
+        else:
+            cleaned.append(text[prev : m.end()])
+        prev = m.end()
+    cleaned.append(text[prev:])
+    return "".join(cleaned)
+
+
+async def _handle_add_custom_datasource(
+    console: Console,
+    name: str,
+    registry,
+    session: "ChatSession",
+):
+    """Ask for the tool name, use the LLM to identify required fields, then collect credentials."""
+
+    console.print()
+    preamble = "[anton.cyan](anton)[/] "
+    if name:
+        tool_name = name
+        name_context = f"'{name}' isn't in my built-in list.\n        "
+    else:
+        tool_name = Prompt.ask(
+            f"{preamble}What is the name of the tool or service?",
+            console=console,
+        )
+        if not tool_name.strip():
+            return None
+        tool_name = tool_name.strip()
+        name_context = ""
+
+    user_answer = Prompt.ask(
+        f"{preamble}{name_context}How do you authenticate with it? "
+        "Describe what credentials you have (don't paste actual values)",
+        console=console,
+    )
+    if not user_answer.strip():
+        return None
+
+    console.print()
+    console.print("[anton.muted]    Got it — working out the connection details…[/]")
+
+    try:
+        response = await session._llm.plan(
+            system="You are a data source connection expert.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"The user wants to connect to {repr(tool_name)} and said: {user_answer}\n\n"
+                        "Return ONLY valid JSON (no markdown fences, no commentary):\n"
+                        '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
+                        '"test_snippet":"python code that tests the connection using os.environ vars DS_FIELDNAME (uppercase field name with DS_ prefix) and prints ok on success, or empty string if untestable",'
+                        '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
+                        '"secret":true or false,"required":true or false,"description":"what it is"}]}'
+                    ),
+                }
+            ],
+            max_tokens=1024,
+        )
+        text = response.content.strip()
+        # Keep 
+        text = _re.sub(r"^```[^\n]*\n|```\s*$", "", text, flags=_re.MULTILINE).strip()
+        data = _json.loads(text)
+    except Exception:
+        console.print(
+            "[anton.warning]        Couldn't identify connection details. Try again.[/]"
+        )
+        console.print()
+        return None
+
+    test_snippet = str(data.get("test_snippet", "")).strip()
+    raw_fields = data.get("fields") or []
+    fields: list[DatasourceField] = []
+    for f in raw_fields:
+        if not isinstance(f, dict) or not f.get("name"):
+            continue
+        fields.append(
+            DatasourceField(
+                name=f["name"],
+                required=bool(f.get("required", True)),
+                secret=bool(f.get("secret", False)),
+                description=str(f.get("description", "")),
+            )
+        )
+
+    if not fields:
+        console.print("[anton.warning]    Couldn't identify any connection fields.[/]")
+        console.print()
+        return None
+
+    display_name = str(data.get("display_name", name))
+    pip_pkg = str(data.get("pip", ""))
+
+    # Show summary
+    console.print()
+    console.print("      [bold]── What I'll save ──────────────────────────[/]")
+    credentials: dict[str, str] = {}
+    for f, raw in zip(fields, raw_fields):
+        inline_value = str(raw.get("value", "")).strip()
+        if f.secret and inline_value:
+            console.print(
+                f"        • [bold]{f.name:<14}[/] (secret — provided, stored securely)"
+            )
+            credentials[f.name] = inline_value
+        elif f.secret:
+            console.print(
+                f"        • [bold]{f.name:<14}[/] (secret — I'll ask for this)"
+            )
+        else:
+            val_display = inline_value or "[anton.muted]<to be collected>[/]"
+            console.print(f"        • [bold]{f.name:<14}[/] {val_display}")
+            if inline_value:
+                credentials[f.name] = inline_value
+    console.print()
+
+    # Prompt for any secret fields not provided inline
+    for f, raw in zip(fields, raw_fields):
+        if not f.secret:
+            continue
+        if str(raw.get("value", "")).strip():
+            continue
+        value = Prompt.ask(
+            f"[anton.cyan](anton)[/] {f.name}",
+            password=True,
+            console=console,
+            default="",
+        )
+        if value:
+            credentials[f.name] = value
+
+    # Prompt for any required non-secret fields not provided inline
+    for f, raw in zip(fields, raw_fields):
+        if f.secret:
+            continue
+        if not f.required:
+            continue
+        if f.name in credentials:
+            continue
+        value = Prompt.ask(
+            f"[anton.cyan](anton)[/] {f.name}",
+            console=console,
+            default="",
+        )
+        if value:
+            credentials[f.name] = value
+
+    # Offer to collect optional non-secret fields
+    for f, raw in zip(fields, raw_fields):
+        if f.secret or f.required or f.name in credentials:
+            continue
+        value = Prompt.ask(
+            f"[anton.cyan](anton)[/] {f.name} (optional — press Enter to skip)",
+            console=console,
+            default="",
+        )
+        if value:
+            credentials[f.name] = value
+
+    if not credentials:
+        console.print("[anton.warning]        No credentials collected. Aborting.[/]")
+        console.print()
+        return None
+
+    # Build engine slug and write definition to ~/.anton/datasources.md
+    slug = _re.sub(r"[^\w]", "_", display_name.lower()).strip("_")
+    field_lines = "\n".join(
+        f"  - {{ name: {f.name}, required: {str(f.required).lower()}, "
+        f'secret: {str(f.secret).lower()}, description: "{f.description}" }}'
+        for f in fields
+    )
+    test_snippet_yaml = ""
+    if test_snippet:
+        indented = "\n".join(f"  {line}" for line in test_snippet.splitlines())
+        test_snippet_yaml = f"test_snippet: |\n{indented}\n"
+
+    yaml_block = (
+        f"\n---\n\n## {display_name}\n"
+        "```yaml\n"
+        f"engine: {slug}\n"
+        f"display_name: {display_name}\n"
+        + (f"pip: {pip_pkg}\n" if pip_pkg else "")
+        + f"fields:\n{field_lines}\n"
+        + test_snippet_yaml
+        + "```\n"
+    )
+    user_ds_path = Path("~/.anton/datasources.md").expanduser()
+    tmp_path = user_ds_path.with_suffix(".tmp")
+
+    # Write to temp, validate it parses, then rename atomically
+    existing = (
+        user_ds_path.read_text(encoding="utf-8") if user_ds_path.is_file() else ""
+    )
+
+    existing = _remove_engine_block(existing, slug)
+
+    tmp_path.write_text(existing + yaml_block, encoding="utf-8")
+
+    parsed = registry.validate_file(tmp_path)
+    if slug in parsed:
+        import shutil
+
+        shutil.move(str(tmp_path), str(user_ds_path))
+    else:
+        tmp_path.unlink(missing_ok=True)
+        console.print(
+            "[anton.warning]Could not validate engine definition — "
+            "credentials saved but engine not written to datasources.md.[/]"
+        )
+
+    registry.reload()
+    engine_def = registry.get(slug)
+    if engine_def is None:
+        # Fallback: construct inline so the flow can continue even if parse failed
+        engine_def = DatasourceEngine(
+            engine=slug,
+            display_name=display_name,
+            pip=pip_pkg,
+            fields=fields,
+            test_snippet=test_snippet,
+        )
+
+    # All required fields must be present before the caller saves credentials
+    missing_required = [f.name for f in fields if f.required and f.name not in credentials]
+    if missing_required:
+        console.print(
+            "[anton.warning]    Cannot save — missing required fields: "
+            f"{', '.join(missing_required)}. Aborting.[/]"
+        )
+        console.print()
+        return None
+
+    return engine_def, credentials
+
+
+async def _run_connection_test(
+    console: "Console",
+    scratchpads: "ScratchpadManager",
+    vault: "DataVault",
+    engine_def: "DatasourceEngine",
+    credentials: dict[str, str],
+    retry_fields: "list[DatasourceField]",
+) -> bool:
+    """Inject flat DS_* vars, run engine_def.test_snippet, restore env.
+
+    Returns True on success, False if the user declines retry after failure.
+    Mutates credentials in-place when the user re-enters secrets on retry.
+    """
+    import os as _os
+
+    while True:
+        console.print()
+        console.print("[anton.cyan](anton)[/] Got it. Testing connection…")
+
+        vault.clear_ds_env()
+        for key, value in credentials.items():
+            _os.environ[f"DS_{key.upper()}"] = value
+        _register_secret_vars(engine_def)  # flat mode, for scrubbing during test
+
+        try:
+            pad = await scratchpads.get_or_create("__datasource_test__")
+            await pad.reset()
+            if engine_def.pip:
+                await pad.install_packages([engine_def.pip])
+            cell = await pad.execute(engine_def.test_snippet)
+        finally:
+            _restore_namespaced_env(vault)
+
+        if cell.error or (cell.stdout.strip() != "ok" and cell.stderr.strip()):
+            error_text = cell.error or cell.stderr.strip() or cell.stdout.strip()
+            first_line = next(
+                (ln for ln in error_text.splitlines() if ln.strip()), error_text
+            )
+            console.print()
+            console.print("[anton.warning](anton)[/] ✗ Connection failed.")
+            console.print()
+            console.print(f"        Error: {first_line}")
+            console.print()
+            retry = (
+                Prompt.ask(
+                    "[anton.cyan](anton)[/] Would you like to re-enter your credentials? [y/n]",
+                    console=console,
+                    default="n",
+                )
+                .strip()
+                .lower()
+            )
+            if retry != "y":
+                return False
+            console.print()
+            for f in retry_fields:
+                if not f.secret:
+                    continue
+                value = Prompt.ask(
+                    f"[anton.cyan](anton)[/] {f.name}",
+                    password=True,
+                    console=console,
+                    default="",
+                )
+                if value:
+                    credentials[f.name] = value
+            continue
+
+        console.print("[anton.success]        ✓ Connected successfully![/]")
+        return True
+
+
+async def _handle_connect_datasource(
+    console: Console,
+    scratchpads: ScratchpadManager,
+    session: "ChatSession",
+    datasource_name: str | None = None,
+    prefill: str | None = None,
+) -> "ChatSession":
+    """
+    Connect a data source by entering credentials, either for a new name or re-entering for an existing one.
+    """
+
+    vault = DataVault()
+    registry = DatasourceRegistry()
+    
+    if datasource_name is not None:
+        _parsed = parse_connection_slug(
+            datasource_name, [e.engine for e in registry.all_engines()], vault=vault
+        )
+        if _parsed is None:
+            console.print(
+                f"[anton.warning]Invalid slug '{datasource_name}'. "
+                "Expected format: engine-name.[/]"
+            )
+            console.print()
+            return session
+        edit_engine, edit_name = _parsed
+        existing = vault.load(edit_engine, edit_name)
+        if existing is None:
+            console.print(
+                f"[anton.warning]No connection '{datasource_name}' found in Local Vault.[/]"
+            )
+            console.print()
+            return session
+        engine_def = registry.get(edit_engine)
+        if engine_def is None:
+            console.print(
+                f"[anton.warning]Unknown engine '{edit_engine}'. "
+                "Cannot update credentials.[/]"
+            )
+            console.print()
+            return session
+
+        console.print()
+        console.print(
+            f"[anton.cyan](anton)[/] Editing [bold]\"{datasource_name}\"[/bold]"
+            f" ({engine_def.display_name})."
+        )
+        console.print("[anton.muted]        Press Enter to keep the current value.[/]")
+        console.print()
+
+        # Detect which fields to present (handle auth_method=choice)
+        active_fields = engine_def.fields
+        if engine_def.auth_method == "choice" and engine_def.auth_methods:
+            for am in engine_def.auth_methods:
+                am_field_names = {af.name for af in am.fields}
+                if any(k in am_field_names for k in existing):
+                    active_fields = am.fields
+                    break
+            if not active_fields:
+                active_fields = engine_def.auth_methods[0].fields
+
+        # Start from existing values; let user update field-by-field
+        credentials: dict[str, str] = dict(existing)
+        for f in active_fields:
+            current = existing.get(f.name, "")
+            prompt_label = f"[anton.cyan](anton)[/] {f.name}"
+            if not f.required:
+                prompt_label += " [anton.muted](optional)[/]"
+
+            if f.secret:
+                masked = "••••••••" if current else ""
+                label = (
+                    f"{prompt_label} [anton.muted][{masked}][/]"
+                    if masked
+                    else prompt_label
+                )
+                value = Prompt.ask(label, password=True, console=console, default="")
+                if value:
+                    credentials[f.name] = value
+                # else: keep existing (already in credentials)
+            elif current:
+                value = Prompt.ask(
+                    f"{prompt_label} [anton.muted][{current}][/]",
+                    console=console,
+                    default=current,
+                )
+                credentials[f.name] = value if value else current
+            elif f.default:
+                value = Prompt.ask(
+                    f"{prompt_label} [anton.muted][{f.default}][/]",
+                    console=console,
+                    default=f.default,
+                )
+                if value:
+                    credentials[f.name] = value
+            else:
+                value = Prompt.ask(prompt_label, console=console, default="")
+                if value:
+                    credentials[f.name] = value
+
+        if engine_def.test_snippet:
+            while True:
+                console.print()
+                console.print("[anton.cyan](anton)[/] Got it. Testing connection…")
+
+                # Temporarily save credentials so inject_env(flat=True) can load them,
+                # then restore all namespaced env vars in the finally block.
+                vault.save(edit_engine, edit_name, credentials)
+                vault.clear_ds_env()
+                vault.inject_env(edit_engine, edit_name, flat=True)
+                _register_secret_vars(engine_def)  # flat names for scrubbing during test
+                try:
+                    pad = await scratchpads.get_or_create("__datasource_test__")
+                    await pad.reset()
+                    if engine_def.pip:
+                        await pad.install_packages([engine_def.pip])
+                    cell = await pad.execute(engine_def.test_snippet)
+                finally:
+                    _restore_namespaced_env(vault)
+
+                if cell.error or (cell.stdout.strip() != "ok" and cell.stderr.strip()):
+                    error_text = (
+                        cell.error or cell.stderr.strip() or cell.stdout.strip()
+                    )
+                    first_line = next(
+                        (ln for ln in error_text.splitlines() if ln.strip()), error_text
+                    )
+                    console.print()
+                    console.print("[anton.warning](anton)[/] ✗ Connection failed.")
+                    console.print()
+                    console.print(f"        Error: {first_line}")
+                    console.print()
+                    retry = (
+                        Prompt.ask(
+                            "[anton.cyan](anton)[/] Would you like to re-enter your credentials? [y/n]",
+                            console=console,
+                            default="n",
+                        )
+                        .strip()
+                        .lower()
+                    )
+                    if retry != "y":
+                        return session
+                    console.print()
+                    for f in active_fields:
+                        if not f.secret:
+                            continue
+                        value = Prompt.ask(
+                            f"[anton.cyan](anton)[/] {f.name}",
+                            password=True,
+                            console=console,
+                            default="",
+                        )
+                        if value:
+                            credentials[f.name] = value
+                    continue
+
+                console.print("[anton.success]        ✓ Connected successfully![/]")
+                break
+
+        vault.save(edit_engine, edit_name, credentials)
+        _restore_namespaced_env(vault)
+        _register_secret_vars(engine_def, engine=edit_engine, name=edit_name)
+        console.print()
+        console.print(
+            f'        Credentials updated for [bold]"{datasource_name}"[/bold].'
+        )
+        console.print()
+        console.print(
+            "[anton.muted]        You can now ask me questions about your data.[/]"
+        )
+        console.print()
+        session._history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f"I've updated the credentials for the {engine_def.display_name} connection "
+                    f'"{datasource_name}" in the Local Vault.'
+                ),
+            }
+        )
+        return session
+
+    console.print()
+    all_engines = registry.all_engines()
+    if prefill:
+        answer = prefill
+    else:
+        console.print(
+            "[anton.cyan](anton)[/] Choose a data source:\n"
+        )
+        console.print("       [bold]  Primary")
+        console.print("         [bold]  0.[/bold] Custom datasource (connect anything via API, SQL, or MCP)\n")
+        console.print("       [bold]  Predefined")
+        for i, e in enumerate(all_engines, 1):
+            console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+        console.print()
+        answer = Prompt.ask(
+            "[anton.cyan](anton)[/] Enter a number or type a name",
+            console=console,
+        )
+
+    stripped_answer = answer.strip()
+    known_slugs = {f"{c['engine']}-{c['name']}": c for c in vault.list_connections()}
+    if stripped_answer in known_slugs:
+        conn = known_slugs[stripped_answer]
+        _restore_namespaced_env(vault)
+        session._active_datasource = stripped_answer
+        recon_engine_def = registry.get(conn["engine"])
+        if recon_engine_def:
+            _register_secret_vars(recon_engine_def, engine=conn["engine"], name=conn["name"])
+            engine_label = recon_engine_def.display_name
+        else:
+            engine_label = conn["engine"]
+        console.print()
+        console.print(
+            f'[anton.success]        ✓ Reconnected to [bold]"{stripped_answer}"[/bold].[/]'
+        )
+        console.print()
+        session._history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f'I\'ve reconnected to the {engine_label} connection "{stripped_answer}" '
+                    f"in the Local Vault. I can now query this data source when needed."
+                ),
+            }
+        )
+        return session
+
+    engine_def: DatasourceEngine | None = None
+    custom_source = False
+
+    if stripped_answer.isdigit() or (stripped_answer.lstrip("-").isdigit()):
+        pick_num = int(stripped_answer)
+        if pick_num == 0:
+            custom_source = True
+        elif 1 <= pick_num <= len(all_engines):
+            engine_def = all_engines[pick_num - 1]
+        else:
+            console.print(
+                f"[anton.warning](anton)[/] '{stripped_answer}' is out of range. "
+                f"Please enter 0–{len(all_engines)}.[/]"
+            )
+            console.print()
+            return session
+
+    if engine_def is None and not custom_source:
+        engine_def = registry.find_by_name(stripped_answer)
+        # if exact match not found, try substring match against display and engine names
+        if engine_def is None:
+            needle = stripped_answer.lower()
+            candidates = [
+                e
+                for e in all_engines
+                if needle in e.display_name.lower() or needle in e.engine.lower()
+            ]
+            if len(candidates) == 1:
+                engine_def = candidates[0]
+            elif len(candidates) > 1:
+                console.print()
+                console.print(
+                    f"[anton.warning](anton)[/] '{stripped_answer}' matches multiple engines — "
+                    "which one did you mean?"
+                )
+                console.print()
+                for i, e in enumerate(candidates, 1):
+                    console.print(f"        {i}. {e.display_name}")
+                console.print()
+                pick = Prompt.ask(
+                    "[anton.cyan](anton)[/] Enter a number",
+                    console=console,
+                ).strip()
+                try:
+                    engine_def = candidates[int(pick) - 1]
+                except (ValueError, IndexError):
+                    console.print("[anton.warning]Invalid choice. Aborting.[/]")
+                    console.print()
+                    return session
+        # fuzzy match against display and engine names if exact match not found
+        if engine_def is None:
+            fuzzy_matches = registry.fuzzy_find(stripped_answer)
+            for suggestion in fuzzy_matches:
+                console.print()
+                console.print(
+                    f'[anton.cyan](anton)[/] Did you mean [bold]"{suggestion.display_name}"[/bold]?'
+                )
+                confirm = (
+                    Prompt.ask(
+                        "[anton.cyan](anton)[/] [y/n]",
+                        console=console,
+                        default="n",
+                    )
+                    .strip()
+                    .lower()
+                )
+                if confirm == "y":
+                    engine_def = suggestion
+                    break
+
+        if engine_def is None:
+            custom_source = True
+
+    if custom_source:
+        result = await _handle_add_custom_datasource(
+            console, stripped_answer if not stripped_answer.isdigit() else "", registry, session
+        )
+        if result is None:
+            return session
+        engine_def, credentials = result
+        if engine_def.test_snippet:
+            if not await _run_connection_test(
+                console, scratchpads, vault, engine_def, credentials, engine_def.fields
+            ):
+                return session
+        conn_name = uuid.uuid4().hex[:8]
+        vault.save(engine_def.engine, conn_name, credentials)
+        slug = f"{engine_def.engine}-{conn_name}"
+        _restore_namespaced_env(vault)
+        session._active_datasource = slug
+        _register_secret_vars(engine_def, engine=engine_def.engine, name=conn_name)
+        console.print(
+            f'        Credentials saved to Local Vault as [bold]"{slug}"[/bold].'
+        )
+        console.print()
+        console.print(
+            "[anton.muted]        You can now ask me questions about your data.[/]"
+        )
+        console.print()
+        session._history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f'I\'ve saved a {engine_def.display_name} connection named "{slug}" '
+                    f"to the Local Vault. I can now query this data source when needed."
+                ),
+            }
+        )
+        return session
+
+    assert engine_def is not None  # custom_source path always returns before this line
+    active_fields = engine_def.fields
+    if engine_def.auth_method == "choice" and engine_def.auth_methods:
+        console.print()
+        console.print(
+            f"[anton.cyan](anton)[/] How would you like to authenticate with "
+            f"[bold]{engine_def.display_name}[/]?"
+        )
+        console.print()
+        for i, am in enumerate(engine_def.auth_methods, 1):
+            console.print(f"        {i}. {am.display}")
+        console.print()
+        choice_str = Prompt.ask(
+            "[anton.cyan](anton)[/] Enter a number",
+            console=console,
+        ).strip()
+        try:
+            choice_idx = int(choice_str) - 1
+            chosen_method = engine_def.auth_methods[choice_idx]
+        except (ValueError, IndexError):
+            console.print("[anton.warning]Invalid choice. Aborting.[/]")
+            console.print()
+            return session
+        active_fields = chosen_method.fields
+
+    required_fields = [f for f in active_fields if f.required]
+    optional_fields = [f for f in active_fields if not f.required]
+
+    console.print()
+    console.print(
+        f"[anton.cyan](anton)[/] To connect [bold]{engine_def.display_name}[/], "
+        "I'll need the following:"
+    )
+    console.print()
+
+    if required_fields:
+        console.print("        [bold]Required[/]      " + "─" * 39)
+        for f in required_fields:
+            console.print(
+                f"        • [bold]{f.name:<12}[/] [anton.muted]— {f.description}[/]"
+            )
+
+    if optional_fields:
+        console.print()
+        console.print("        [bold]Optional[/]      " + "─" * 39)
+        for f in optional_fields:
+            console.print(
+                f"        • [bold]{f.name:<12}[/] [anton.muted]— {f.description}[/]"
+            )
+
+    console.print()
+
+    mode_answer = (
+        Prompt.ask(
+            "[anton.cyan](anton)[/] Do you have these available? [y/n/<list params>]",
+            console=console,
+        )
+        .strip()
+        .lower()
+    )
+
+    if mode_answer == "n":
+        console.print()
+        console.print(
+            "[anton.cyan](anton)[/] No problem. Which parameters do you have? "
+            "I'll save a partial connection now, and you can fill in the rest later "
+            "with [bold]/edit[/]."
+        )
+        console.print()
+        console.print("       Provide what you have (press enter to skip any field):")
+        console.print()
+        fields_to_collect = active_fields
+        partial = True
+    elif mode_answer == "y":
+        fields_to_collect = active_fields
+        partial = False
+    else:
+        # User gave a comma-separated list of param names — filter to those fields.
+        # If nothing matches (e.g. they typed a credential value by mistake), fall
+        # back to collecting all fields.
+        requested = {n.strip().lower() for n in mode_answer.split(",")}
+        matched = [f for f in active_fields if f.name.lower() in requested]
+        fields_to_collect = matched if matched else active_fields
+        partial = False
+
+    console.print()
+    credentials: dict[str, str] = {}
+
+    for f in fields_to_collect:
+        prompt_label = f"[anton.cyan](anton)[/] {f.name}"
+        if not f.required or partial:
+            prompt_label += " [anton.muted](optional, press enter to skip)[/]"
+
+        if f.secret:
+            value = Prompt.ask(prompt_label, password=True, console=console, default="")
+        elif f.default:
+            value = Prompt.ask(
+                f"{prompt_label} [anton.muted][{f.default}][/]",
+                console=console,
+                default=f.default,
+            )
+        else:
+            value = Prompt.ask(prompt_label, console=console, default="")
+
+        if value:
+            credentials[f.name] = value
+
+    if partial:
+        auto_name = uuid.uuid4().hex[:8]
+        vault.save(engine_def.engine, auto_name, credentials)
+        slug = f"{engine_def.engine}-{auto_name}"
+        console.print()
+        console.print(
+            f"[anton.muted]Partial connection saved to Local Vault as "
+            f'[bold]"{slug}"[/bold]. '
+            f"Run [bold]/edit {slug}[/bold] to complete it when you're ready.[/]"
+        )
+        console.print()
+        return session
+    
+    if engine_def.test_snippet:
+        if not await _run_connection_test(
+            console, scratchpads, vault, engine_def, credentials, active_fields
+        ):
+            return session
+
+    conn_name = registry.derive_name(engine_def, credentials)
+    if not conn_name:
+        conn_name = uuid.uuid4().hex[:8]
+
+    slug = f"{engine_def.engine}-{conn_name}"
+
+    if vault.load(engine_def.engine, conn_name) is not None:
+        console.print()
+        console.print(
+            f'[anton.warning](anton)[/] A connection [bold]"{slug}"[/bold] already exists.'
+        )
+        console.print()
+        choice = (
+            Prompt.ask(
+                "[anton.cyan](anton)[/] [reconnect/cancel]",
+                console=console,
+                default="cancel",
+            )
+            .strip()
+            .lower()
+        )
+        if choice != "reconnect":
+            console.print("[anton.muted]Cancelled.[/]")
+            console.print()
+            return session
+        _restore_namespaced_env(vault)
+        _register_secret_vars(engine_def, engine=engine_def.engine, name=conn_name)
+        console.print()
+        console.print(
+            f'[anton.success]        ✓ Reconnected to [bold]"{slug}"[/bold].[/]'
+        )
+        console.print()
+        session._history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f'I\'ve reconnected to the {engine_def.display_name} connection "{slug}" '
+                    f"in the Local Vault. I can now query this data source when needed."
+                ),
+            }
+        )
+        return session
+
+    vault.save(engine_def.engine, conn_name, credentials)
+    _restore_namespaced_env(vault)
+    session._active_datasource = slug
+    _register_secret_vars(engine_def, engine=engine_def.engine, name=conn_name)
+    console.print(f'        Credentials saved to Local Vault as [bold]"{slug}"[/bold].')
+
+    console.print()
+    console.print(
+        "[anton.muted]        You can now ask me questions about your data.[/]"
+    )
+    console.print()
+
+    # Inject a brief assistant message so the LLM is aware of the new connection
+    session._history.append(
+        {
+            "role": "assistant",
+            "content": (
+                f'I\'ve saved a {engine_def.display_name} connection named "{slug}" '
+                f"to the Local Vault. I can now query this data source when needed."
+            ),
+        }
+    )
+    return session
+
+
+def _handle_list_data_sources(console: Console) -> None:
+    """Print all saved Local Vault connections in a table with status."""
+    from rich.table import Table
+
+    vault = DataVault()
+    registry = DatasourceRegistry()
+    conns = vault.list_connections()
+    console.print()
+    if not conns:
+        console.print("[anton.muted]No data sources connected yet.[/]")
+        console.print("[anton.muted]Use /connect to add one.[/]")
+        console.print()
+        return
+
+    table = Table(title="Local Vault — Saved Connections", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Source")
+    table.add_column("Status")
+
+    for c in conns:
+        slug = f"{c['engine']}-{c['name']}"
+        engine_def = registry.get(c["engine"])
+        source = engine_def.display_name if engine_def else c["engine"]
+        fields = vault.load(c["engine"], c["name"]) or {}
+
+        if not fields:
+            status = "[yellow]incomplete[/]"
+        elif engine_def and engine_def.auth_method != "choice":
+            required = [f.name for f in engine_def.fields if f.required]
+            missing = [name for name in required if name not in fields]
+            status = "[yellow]incomplete[/]" if missing else "[green]saved[/]"
+        else:
+            # choice-auth engine or unknown engine: presence of any field = saved
+            status = "[green]saved[/]"
+
+        table.add_row(slug, source, status)
+
+    console.print(table)
+    console.print()
+
+
+def _handle_remove_data_source(console: Console, slug: str) -> None:
+    """Delete a connection from the Local Vault by slug (engine-name)."""
+    vault = DataVault()
+    registry = DatasourceRegistry()
+    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()], vault=vault)
+    if _parsed is None:
+        console.print(
+            f"[anton.warning]Invalid name '{slug}'. Use engine-name format.[/]"
+        )
+        console.print()
+        return
+    engine, name = _parsed
+    if vault.load(engine, name) is None:
+        console.print(f"[anton.warning]No connection '{slug}' found.[/]")
+        console.print()
+        return
+    if Confirm.ask(
+        f"Remove '{slug}' from Local Vault?", default=False, console=console
+    ):
+        vault.delete(engine, name)
+        _restore_namespaced_env(vault)
+        console.print(f"[anton.success]Removed {slug}.[/]")
+    else:
+        console.print("[anton.muted]Cancelled.[/]")
+    console.print()
+
+
+async def _handle_test_datasource(
+    console: Console,
+    scratchpads: ScratchpadManager,
+    slug: str,
+) -> None:
+    """Test an existing Local Vault connection by running its test_snippet."""
+    if not slug:
+        console.print(
+            "[anton.warning]Usage: /test <engine-name>[/]"
+        )
+        console.print()
+        return
+
+    vault = DataVault()
+    registry = DatasourceRegistry()
+    _parsed = parse_connection_slug(slug, [e.engine for e in registry.all_engines()], vault=vault)
+    if _parsed is None:
+        console.print(
+            f"[anton.warning]Invalid name '{slug}'. Use engine-name format.[/]"
+        )
+        console.print()
+        return
+    engine, name = _parsed
+    fields = vault.load(engine, name)
+    if fields is None:
+        console.print(
+            f"[anton.warning]No connection '{slug}' found in Local Vault.[/]"
+        )
+        console.print()
+        return
+
+    engine_def = registry.get(engine)
+    if engine_def is None:
+        console.print(
+            f"[anton.warning]Unknown engine '{engine}'. Cannot test.[/]"
+        )
+        console.print()
+        return
+
+    if not engine_def.test_snippet:
+        console.print(
+            f"[anton.warning]No test snippet defined for '{engine}'. Cannot test.[/]"
+        )
+        console.print()
+        return
+
+    console.print()
+    console.print(
+        f"[anton.cyan](anton)[/] Testing connection [bold]{slug}[/bold]…"
+    )
+
+    vault.clear_ds_env()
+    vault.inject_env(engine, name, flat=True)
+    _register_secret_vars(engine_def)  # flat names for scrubbing during test
+
+    cell = None
+    try:
+        pad = await scratchpads.get_or_create("__datasource_test__")
+        await pad.reset()
+        if engine_def.pip:
+            await pad.install_packages([engine_def.pip])
+        cell = await pad.execute(engine_def.test_snippet)
+    finally:
+        _restore_namespaced_env(vault)
+
+    if cell is None or cell.error or (
+        cell.stdout.strip() != "ok" and cell.stderr.strip()
+    ):
+        error_text = ""
+        if cell is not None:
+            error_text = cell.error or cell.stderr.strip() or cell.stdout.strip()
+        first_line = (
+            next((ln for ln in error_text.splitlines() if ln.strip()), error_text)
+            if error_text
+            else "unknown error"
+        )
+        console.print()
+        console.print(
+            f"[anton.warning](anton)[/] ✗ Connection test failed for"
+            f" [bold]{slug}[/bold]."
+        )
+        console.print()
+        console.print(f"        Error: {first_line}")
+    else:
+        console.print(
+            f"[anton.success]        ✓ Connection test passed for"
+            f" [bold]{slug}[/bold]![/]"
+        )
+    console.print()
+
+
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/connect[/]           — Connect to a Minds server and select a mind")
-    console.print("  [bold]/data-connections[/]  — View and manage stored keys and connections")
-    console.print("  [bold]/setup[/]             — Configure models or memory settings")
-    console.print("  [bold]/memory[/]            — Show memory status dashboard")
-    console.print("  [bold]/paste[/]             — Attach clipboard image to your message")
-    console.print("  [bold]/resume[/]            — Resume a previous chat session")
-    console.print("  [bold]/help[/]              — Show this help message")
-    console.print("  [bold]exit[/]               — Quit the chat")
+#    console.print(
+#        "  [bold]/connect[/]                — Connect to a Minds server and select a mind"
+#    )
+    console.print(
+        "  [bold]/connect[/]    — Connect a database or API to the Local Vault"
+    )
+    console.print(
+        "  [bold]/list[/]      — List all saved data source connections"
+    )
+    console.print("  [bold]/edit[/]       — Edit a saved connection's credentials")
+    console.print("  [bold]/remove[/]     — Remove a saved connection")
+    console.print("  [bold]/test[/]       — Test a saved connection")
+    console.print(
+        "  [bold]/setup[/]                  — Configure models or memory settings"
+    )
+    console.print("  [bold]/memory[/]                 — Show memory status dashboard")
+    console.print(
+        "  [bold]/paste[/]                  — Attach clipboard image to your message"
+    )
+    console.print("  [bold]/resume[/]                 — Resume a previous chat session")
+    console.print("  [bold]/help[/]                   — Show this help message")
+    console.print("  [bold]exit[/]                    — Quit the chat")
     console.print()
 
 
@@ -2302,8 +3734,12 @@ class _ClosingSpinner:
         from rich.spinner import Spinner
         from rich.text import Text
 
-        spinner = Spinner("dots", text=Text(" Closing scratchpad processes…", style="anton.muted"))
-        self._live = Live(spinner, console=self._console, refresh_per_second=6, transient=True)
+        spinner = Spinner(
+            "dots", text=Text(" Closing scratchpad processes…", style="anton.muted")
+        )
+        self._live = Live(
+            spinner, console=self._console, refresh_per_second=6, transient=True
+        )
         self._live.start()
 
     def stop(self) -> None:
@@ -2312,12 +3748,16 @@ class _ClosingSpinner:
             self._live = None
 
 
-def run_chat(console: Console, settings: AntonSettings, *, resume: bool = False) -> None:
+def run_chat(
+    console: Console, settings: AntonSettings, *, resume: bool = False
+) -> None:
     """Launch the interactive chat REPL."""
     asyncio.run(_chat_loop(console, settings, resume=resume))
 
 
-async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool = False) -> None:
+async def _chat_loop(
+    console: Console, settings: AntonSettings, *, resume: bool = False
+) -> None:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.memory.cortex import Cortex
@@ -2332,6 +3772,17 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
     # Workspace for anton.md and secret vault
     workspace = Workspace(settings.workspace_path)
     workspace.apply_env_to_process()
+
+    # Inject all Local Vault connections as namespaced DS_* env vars so every
+    # scratchpad subprocess inherits them. Must happen before any ChatSession is created.
+    _dv = DataVault()
+    _dreg = DatasourceRegistry()
+    for _conn in _dv.list_connections():
+        _dv.inject_env(_conn["engine"], _conn["name"])  # flat=False by default
+        _edef = _dreg.get(_conn["engine"])
+        if _edef is not None:
+            _register_secret_vars(_edef, engine=_conn["engine"], name=_conn["name"])
+    del _dv, _dreg
 
     # --- Memory system (brain-inspired architecture) ---
     global_memory_dir = Path.home() / ".anton" / "memory"
@@ -2379,7 +3830,8 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
     runtime_context = _build_runtime_context(settings)
 
     coding_api_key = (
-        settings.anthropic_api_key if settings.coding_provider == "anthropic"
+        settings.anthropic_api_key
+        if settings.coding_provider == "anthropic"
         else settings.openai_api_key
     ) or ""
     session = ChatSession(
@@ -2400,15 +3852,21 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
     # Handle --resume flag at startup
     if resume:
         session, resumed_id = await _handle_resume(
-            console, settings, state, self_awareness, cortex,
-            workspace, session, episodic=episodic,
+            console,
+            settings,
+            state,
+            self_awareness,
+            cortex,
+            workspace,
+            session,
+            episodic=episodic,
             history_store=history_store,
         )
         if resumed_id:
             current_session_id = resumed_id
 
 
-    console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
+    console.print("[anton.muted] Chat with me, type '/help' for commands or 'exit' to quit.[/]")
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
@@ -2436,9 +3894,11 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
         line = status + " " * gap + stats
         return HTML(f"\n<style fg='#555570'>{line}</style>")
 
-    pt_style = PTStyle.from_dict({
-        "bottom-toolbar": "noreverse nounderline bg:default",
-    })
+    pt_style = PTStyle.from_dict(
+        {
+            "bottom-toolbar": "noreverse nounderline bg:default",
+        }
+    )
 
     prompt_session: PromptSession[str] = PromptSession(
         mouse_support=False,
@@ -2455,7 +3915,11 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 for i, engram in enumerate(pending, 1):
                     console.print(f"  [bold]{i}.[/] [{engram.kind}] {engram.text}")
                 console.print()
-                confirm = console.input("[bold]Save to memory? (y/n/pick numbers):[/] ").strip().lower()
+                confirm = (
+                    console.input("[bold]Save to memory? (y/n/pick numbers):[/] ")
+                    .strip()
+                    .lower()
+                )
                 if confirm in ("y", "yes"):
                     if cortex is not None:
                         await cortex.encode(pending)
@@ -2465,11 +3929,19 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 else:
                     # Parse number selections like "1 3" or "1,3"
                     try:
-                        nums = [int(x.strip()) for x in confirm.replace(",", " ").split() if x.strip().isdigit()]
-                        selected = [pending[n - 1] for n in nums if 1 <= n <= len(pending)]
+                        nums = [
+                            int(x.strip())
+                            for x in confirm.replace(",", " ").split()
+                            if x.strip().isdigit()
+                        ]
+                        selected = [
+                            pending[n - 1] for n in nums if 1 <= n <= len(pending)
+                        ]
                         if selected and cortex is not None:
                             await cortex.encode(selected)
-                            console.print(f"[anton.muted]Saved {len(selected)} entries.[/]")
+                            console.print(
+                                f"[anton.muted]Saved {len(selected)} entries.[/]"
+                            )
                         else:
                             console.print("[anton.muted]Discarded.[/]")
                     except (ValueError, IndexError):
@@ -2522,17 +3994,28 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
             if message_content is None and stripped.startswith("/"):
                 parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
-                if cmd == "/connect":
-                    session = await _handle_connect(
-                        console, settings, workspace, state,
-                        self_awareness, cortex, session,
-                        episodic=episodic,
-                    )
-                    continue
-                elif cmd == "/setup":
+#                if cmd == "/connect":
+#                    session = await _handle_connect(
+#                        console,
+#                        settings,
+#                        workspace,
+#                        state,
+#                        self_awareness,
+#                        cortex,
+#                        session,
+#                        episodic=episodic,
+#                    )
+#                    continue
+#                elif cmd == "/setup":
+                if cmd == "/setup":
                     session = await _handle_setup(
-                        console, settings, workspace, state,
-                        self_awareness, cortex, session,
+                        console,
+                        settings,
+                        workspace,
+                        state,
+                        self_awareness,
+                        cortex,
+                        session,
                         episodic=episodic,
                         history_store=history_store,
                         session_id=current_session_id,
@@ -2541,15 +4024,60 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 elif cmd == "/memory":
                     _handle_memory(console, settings, cortex, episodic=episodic)
                     continue
-                elif cmd == "/data-connections":
-                    session = await _handle_data_connections(
-                        console, settings, workspace, session,
+                elif cmd == "/connect":
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+                    session = await _handle_connect_datasource(
+                        console,
+                        session._scratchpads,
+                        session,
+                        prefill=arg or None,
+                    )
+                    continue
+                elif cmd == "/list":
+                    _handle_list_data_sources(console)
+                    continue
+                elif cmd == "/remove":
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+                    if not arg:
+                        console.print(
+                            "[anton.warning]Usage: /remove"
+                            " <engine-name>[/]"
+                        )
+                        console.print()
+                    else:
+                        _handle_remove_data_source(console, arg)
+                    continue
+                elif cmd == "/edit":
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+                    if not arg:
+                        console.print(
+                            "[anton.warning]Usage: /edit <engine-name>[/]"
+                        )
+                        console.print()
+                    else:
+                        session = await _handle_connect_datasource(
+                            console,
+                            session._scratchpads,
+                            session,
+                            datasource_name=arg,
+                        )
+                    continue
+                elif cmd == "/test":
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+                    await _handle_test_datasource(
+                        console, session._scratchpads, arg
                     )
                     continue
                 elif cmd == "/resume":
                     session, resumed_id = await _handle_resume(
-                        console, settings, state, self_awareness, cortex,
-                        workspace, session, episodic=episodic,
+                        console,
+                        settings,
+                        state,
+                        self_awareness,
+                        cortex,
+                        workspace,
+                        session,
+                        episodic=episodic,
                         history_store=history_store,
                     )
                     if resumed_id:
@@ -2570,7 +4098,9 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                             f"{_human_size(uploaded.size_bytes)})[/]"
                         )
                         user_text = parts[1] if len(parts) > 1 else ""
-                        message_content = _format_clipboard_image_message(uploaded, user_text)
+                        message_content = _format_clipboard_image_message(
+                            uploaded, user_text
+                        )
                         # Fall through to turn_stream (don't continue)
                     else:
                         console.print("[anton.warning]No image found on clipboard.[/]")
@@ -2639,6 +4169,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
                 )
                 settings.anthropic_api_key = None
                 from anton.cli import _ensure_api_key
+
                 _ensure_api_key(settings)
                 session = _rebuild_session(
                     settings=settings,
