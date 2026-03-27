@@ -3096,26 +3096,84 @@ async def _handle_connect_datasource(
 
     console.print()
     all_engines = registry.all_engines()
-    if prefill:
-        answer = prefill
-    else:
+    popular_engines = [e for e in all_engines if e.popular and not e.custom]
+    other_engines = [e for e in all_engines if not e.popular and not e.custom]
+    custom_engines = [e for e in all_engines if e.custom]
+    display_engines = popular_engines + other_engines + custom_engines
+
+    def _print_sections() -> None:
         console.print(
             "[anton.cyan](anton)[/] Choose a data source:\n"
         )
         console.print("       [bold]  Primary")
-        console.print("         [bold]  0.[/bold] Custom datasource (connect anything via API, SQL, or MCP)\n")
-        console.print("       [bold]  Predefined")
-        for i, e in enumerate(all_engines, 1):
-            console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+        console.print(
+            "         [bold]  0.[/bold] Custom datasource"
+            " (connect anything via API, SQL, or MCP)\n"
+        )
+        if popular_engines:
+            console.print("       [bold]  Most popular")
+            for i, e in enumerate(popular_engines, 1):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            console.print()
+        if other_engines:
+            start = len(popular_engines) + 1
+            console.print("       [bold]  Other connectors")
+            for i, e in enumerate(other_engines[:3], start):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            if len(other_engines) > 3:
+                console.print(
+                    f"          [anton.muted]   … and"
+                    f" {len(other_engines) - 3} more"
+                    f" (type 'all' to see all)[/]"
+                )
+            console.print()
+        if custom_engines:
+            start = len(popular_engines) + len(other_engines) + 1
+            console.print("       [bold]  Custom")
+            for i, e in enumerate(custom_engines, start):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            console.print()
+
+    def _print_all() -> None:
+        console.print(
+            "[anton.cyan](anton)[/] All data sources (★ = popular):\n"
+        )
+        console.print("       [bold]  Primary")
+        console.print(
+            "         [bold]  0.[/bold] Custom datasource"
+            " (connect anything via API, SQL, or MCP)\n"
+        )
+        for i, e in enumerate(display_engines, 1):
+            star = " ★" if e.popular else ""
+            console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}{star}")
+        console.print()
+
+    if prefill:
+        answer = prefill
+    else:
+        _print_sections()
+        console.print(
+            "       [anton.muted]Type 'all' to see every datasource.[/]"
+        )
         console.print()
         answer = _prompt_or_cancel(
             "(anton) Enter a number or type a name",
         )
         if answer is None:
             return session
+        if answer.strip().lower() == "all":
+            console.print()
+            _print_all()
+            answer = _prompt_or_cancel(
+                "(anton) Enter a number or type a name",
+            )
+            if answer is None:
+                return session
 
     stripped_answer = answer.strip()
-    known_slugs = {f"{c['engine']}-{c['name']}": c for c in vault.list_connections()}
+    known_slugs = {
+        f"{c['engine']}-{c['name']}": c for c in vault.list_connections()
+    }
     if stripped_answer in known_slugs:
         conn = known_slugs[stripped_answer]
         _restore_namespaced_env(vault)
@@ -3149,12 +3207,12 @@ async def _handle_connect_datasource(
         pick_num = int(stripped_answer)
         if pick_num == 0:
             custom_source = True
-        elif 1 <= pick_num <= len(all_engines):
-            engine_def = all_engines[pick_num - 1]
+        elif 1 <= pick_num <= len(display_engines):
+            engine_def = display_engines[pick_num - 1]
         else:
             console.print(
                 f"[anton.warning](anton)[/] '{stripped_answer}' is out of range. "
-                f"Please enter 0–{len(all_engines)}.[/]"
+                f"Please enter 0–{len(display_engines)}.[/]"
             )
             console.print()
             return session
