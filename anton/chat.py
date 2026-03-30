@@ -56,7 +56,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -1581,7 +1581,8 @@ async def _handle_setup_models(
     _print_choices()
 
     while True:
-        choice = await _prompt_or_cancel("(anton) Choose LLM Provider", choices=["1", "2", "3", "q"], default="q")
+        choice = await _prompt_or_cancel("(anton) Choose LLM Provider",
+                                         choices=["1", "2", "q"], default="q")
         if choice is None or choice == "q":
             return session
 
@@ -2189,13 +2190,12 @@ async def _handle_data_connections(
                 console.print()
                 continue
 
-            scope = await _prompt_or_cancel(
-                "(anton) Store in",
+            scope = Prompt.ask(
+                "Store in",
                 choices=["global", "project"],
                 default="global",
+                console=console,
             )
-            if scope is None:
-                scope = "global"
             target_ws = global_ws if scope == "global" else workspace
             scope_label = (
                 "~/.anton/.env"
@@ -2404,8 +2404,8 @@ async def _handle_connect(
             "ANTHROPIC_API_KEY"
         )
         if not has_anthropic:
-            anthropic_key = (await _prompt_or_cancel("(anton) Anthropic API key (for LLM)") or "").strip()
-            if anthropic_key:
+            anthropic_key = Prompt.ask("Anthropic API key (for LLM)", console=console)
+            if anthropic_key.strip():
                 anthropic_key = anthropic_key.strip()
                 settings.anthropic_api_key = anthropic_key
                 settings.planning_provider = "anthropic"
@@ -4194,7 +4194,7 @@ async def _chat_loop(
                     _closing = _ClosingSpinner(console)
                     _closing.start()
                     try:
-                        await session._scratchpads.cancel_all_running()
+                        await session._scratchpads.close_all()
                     finally:
                         _closing.stop()
                 else:
