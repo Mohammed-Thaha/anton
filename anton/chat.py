@@ -3118,8 +3118,8 @@ async def _handle_connect_datasource(
     else:
         _print_sections()
         console.print(
-            "       [anton.muted]Don't see yours? Type a datasource name (e.g., GitHub, Gmail, Jira, ...)"
-            " — we'll work out the details together.[/]"
+            "       [anton.muted]Don't see yours? Type a datasource name (e.g., GitHub, Gmail, Jira, ...)\n"
+            "       It can be virtually any datasource — we'll figure out the details together.[/]"
         )
         console.print()
         answer = await _prompt_or_cancel(
@@ -3215,23 +3215,52 @@ async def _handle_connect_datasource(
                     console.print("[anton.warning]Invalid choice. Aborting.[/]")
                     console.print()
                     return session
-        # fuzzy match against display and engine names if exact match not found
+        # Ask the LLM to identify the datasource
         if engine_def is None:
-            fuzzy_matches = registry.fuzzy_find(stripped_answer)
-            for suggestion in fuzzy_matches:
+            engine_names = [e.display_name for e in all_engines]
+            try:
                 console.print()
-                console.print(
-                    f'[anton.cyan](anton)[/] Did you mean [bold]"{suggestion.display_name}"[/bold]?'
+                console.print("[anton.muted]        Looking up datasource…[/]")
+                llm_resp = await session._llm.plan(
+                    system="You are a datasource identification assistant.",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The user typed: {stripped_answer!r}\n"
+                                f"Known datasources: {engine_names!r}\n\n"
+                                "If the user input clearly matches one of the known datasources, "
+                                "reply with EXACTLY: MATCH:<display_name>\n"
+                                "If it does NOT match any known datasource but you recognise it "
+                                "as a real service/tool, reply with EXACTLY: CUSTOM\n"
+                                "If you don't recognise it at all, reply with EXACTLY: UNKNOWN\n"
+                                "Reply with only one of those three forms, nothing else."
+                            ),
+                        }
+                    ],
+                    max_tokens=64,
                 )
-                confirm = await _prompt_or_cancel(
-                    "(anton) Use this datasource? (y/n)",
-                )
-                if confirm is not None and confirm.strip().lower() == "y":
-                    engine_def = suggestion
-                    break
+                llm_text = (llm_resp.content or "").strip()
+            except Exception:
+                llm_text = "UNKNOWN"
 
-        if engine_def is None:
-            custom_source = True
+            if llm_text.startswith("MATCH:"):
+                matched_name = llm_text[len("MATCH:"):].strip()
+                matched_engine = next(
+                    (e for e in all_engines if e.display_name == matched_name), None
+                )
+                if matched_engine is not None:
+                    if matched_name.lower() != stripped_answer.lower():
+                        confirm = await _prompt_or_cancel(
+                            f'(anton) Did you mean "{matched_name}"? (y/n)',
+                        )
+                        if confirm is not None and confirm.strip().lower() == "y":
+                            engine_def = matched_engine
+                    else:
+                        engine_def = matched_engine
+
+            if engine_def is None:
+                custom_source = True
 
     if custom_source:
         result = await _handle_add_custom_datasource(
