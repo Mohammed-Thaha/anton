@@ -3465,12 +3465,30 @@ async def _handle_connect_datasource(
             console, session, engine_def.display_name, None, active_fields,
         )
 
-    mode_answer = await _prompt_or_cancel(
-        "(anton) Do you have these available? (y/n/list params)",
-    )
-    if mode_answer is None:
-        return session
-    mode_answer = mode_answer.strip().lower()
+    field_name_set = {f.name.lower() for f in active_fields}
+
+    while True:
+        mode_answer = await _prompt_or_cancel(
+            "(anton) Do you have these available? (y/n/list params)",
+        )
+        if mode_answer is None:
+            return session
+        mode_answer = mode_answer.strip().lower()
+
+        if mode_answer in ("y", "n"):
+            break
+
+        # Check if user gave valid comma-separated param names
+        requested = {n.strip().lower() for n in mode_answer.split(",")}
+        matched = [f for f in active_fields if f.name.lower() in requested]
+        if matched:
+            break
+
+        console.print(
+            "[anton.warning]        Please enter y, n, or a comma-separated list of parameter names "
+            f"({', '.join(f.name for f in active_fields)}).[/]"
+        )
+        console.print()
 
     if mode_answer == "n":
         console.print()
@@ -3488,12 +3506,7 @@ async def _handle_connect_datasource(
         fields_to_collect = active_fields
         partial = False
     else:
-        # User gave a comma-separated list of param names — filter to those fields.
-        # If nothing matches (e.g. they typed a credential value by mistake), fall
-        # back to collecting all fields.
-        requested = {n.strip().lower() for n in mode_answer.split(",")}
-        matched = [f for f in active_fields if f.name.lower() in requested]
-        fields_to_collect = matched if matched else active_fields
+        fields_to_collect = matched
         partial = False
 
     console.print()
