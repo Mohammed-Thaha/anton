@@ -3159,6 +3159,15 @@ async def _handle_connect_datasource(
     custom_engines = [e for e in all_engines if e.custom]
     display_engines = popular_engines + other_engines + custom_engines
 
+    saved_connections = vault.list_connections()
+    # Build deduplicated list of saved connection display entries
+    saved_entries: list[tuple[str, str]] = []  # (slug, display_name)
+    for c in saved_connections:
+        slug = f"{c['engine']}-{c['name']}"
+        engine = registry.get(c["engine"])
+        label = engine.display_name if engine else c["engine"]
+        saved_entries.append((slug, label))
+
     def _print_sections() -> None:
         console.print(
             "[anton.cyan](anton)[/] Choose a data source:\n"
@@ -3172,6 +3181,12 @@ async def _handle_connect_datasource(
             console.print("       [bold]  Most popular")
             for i, e in enumerate(popular_engines, 1):
                 console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            console.print()
+        if saved_entries:
+            start = len(popular_engines) + 1
+            console.print("       [bold]  Your connections")
+            for i, (slug, label) in enumerate(saved_entries, start):
+                console.print(f"          [bold]{i:>2}.[/bold] {label} [dim]({slug})[/]")
             console.print()
 
     def _print_all() -> None:
@@ -3244,17 +3259,49 @@ async def _handle_connect_datasource(
     engine_def: DatasourceEngine | None = None
     custom_source = False
     llm_recognised = False
+    # Saved connections are numbered after popular engines
+    saved_start = len(popular_engines) + 1
+    max_num = len(popular_engines) + len(saved_entries)
 
     if stripped_answer.isdigit() or (stripped_answer.lstrip("-").isdigit()):
         pick_num = int(stripped_answer)
         if pick_num == 0:
             custom_source = True
-        elif 1 <= pick_num <= len(display_engines):
-            engine_def = display_engines[pick_num - 1]
+        elif 1 <= pick_num <= len(popular_engines):
+            engine_def = popular_engines[pick_num - 1]
+        elif saved_entries and saved_start <= pick_num <= max_num:
+            # User picked a saved connection — reconnect directly
+            picked_slug = saved_entries[pick_num - saved_start][0]
+            conn = {
+                f"{c['engine']}-{c['name']}": c for c in saved_connections
+            }[picked_slug]
+            _restore_namespaced_env(vault)
+            session._active_datasource = picked_slug
+            recon_engine_def = registry.get(conn["engine"])
+            if recon_engine_def:
+                _register_secret_vars(recon_engine_def, engine=conn["engine"], name=conn["name"])
+                engine_label = recon_engine_def.display_name
+            else:
+                engine_label = conn["engine"]
+            console.print()
+            console.print(
+                f'[anton.success]        \u2713 Reconnected to [bold]"{picked_slug}"[/bold].[/]'
+            )
+            console.print()
+            session._history.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        f'I\'ve reconnected to the {engine_label} connection "{picked_slug}" '
+                        f"in the Local Vault. I can now query this data source when needed."
+                    ),
+                }
+            )
+            return session
         else:
             console.print(
                 f"[anton.warning](anton)[/] '{stripped_answer}' is out of range. "
-                f"Please enter 0–{len(display_engines)}.[/]"
+                f"Please enter 0\u2013{max_num}.[/]"
             )
             console.print()
             return session
