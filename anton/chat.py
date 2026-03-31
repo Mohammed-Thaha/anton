@@ -1696,20 +1696,26 @@ def _mask_secret(value: str, *, keep: int = 4) -> str:
     return f"{value[:keep]}...{value[-keep:]}"
 
 
+_HELP_SENTINEL = "\x00__HELP__"
+
+
 async def _prompt_or_cancel(
     label: str,
     *,
     default: str = "",
     password: bool = False,
     choices: list[str] | None = None,
+    show_help_hint: bool = False,
 ) -> str | None:
     """Prompt for free-text input; return None if the user presses Esc.
 
     Fully async via prompt_toolkit's prompt_async() — event loop never blocked.
     Only Esc is bound for cancellation; Ctrl+C propagates as KeyboardInterrupt.
     If `choices` is given, re-prompts until input matches or user presses Esc.
+    If `show_help_hint` is True, Ctrl+H is bound and returns _HELP_SENTINEL.
     """
     _esc = False
+    _help = False
     bindings = KeyBindings()
 
     @bindings.add("escape")
@@ -1718,9 +1724,22 @@ async def _prompt_or_cancel(
         _esc = True
         event.app.exit(result="")
 
+    if show_help_hint:
+        @bindings.add("c-h")
+        def _on_help(event):
+            nonlocal _help
+            _help = True
+            event.app.exit(result="")
+
     pt_style = PTStyle.from_dict({"bottom-toolbar": "noreverse nounderline bg:default"})
 
     def _toolbar():
+        if show_help_hint:
+            return HTML(
+                "<style fg='#5f9ea0' italic='true'>"
+                "Esc to cancel ·  Ctrl+H for instructions on getting these credentials"
+                "</style>"
+            )
         return HTML("<style fg='#5f9ea0' italic='true'>Esc to cancel</style>")
 
     if password:
@@ -1744,9 +1763,12 @@ async def _prompt_or_cancel(
 
     while True:
         _esc = False
+        _help = False
         result = await pt_session.prompt_async(message)
         if _esc:
             return None
+        if _help:
+            return _HELP_SENTINEL
         val = result.strip() if result else default
         if choices is None or val in choices:
             break
@@ -2671,13 +2693,14 @@ async def _handle_add_custom_datasource(
     name: str,
     registry,
     session: "ChatSession",
+    *,
+    known_service: bool = False,
 ):
     """Ask for the tool name, use the LLM to identify required fields, then collect credentials."""
 
     console.print()
     if name:
         tool_name = name
-        name_context = f"'{name}' isn't in my built-in list.\n        "
     else:
         tool_name = await _prompt_or_cancel(
             "(anton) What is the name of the tool or service?",
@@ -2685,17 +2708,33 @@ async def _handle_add_custom_datasource(
         if not tool_name or not tool_name.strip():
             return None
         tool_name = tool_name.strip()
-        name_context = ""
 
-    user_answer = await _prompt_or_cancel(
-        f"(anton) {name_context}How do you authenticate with it? "
-        "Describe what credentials you have (don't paste actual values)",
+    if known_service:
+        # LLM already recognised this service — skip the auth question
+        user_answer = ""
+        console.print("[anton.muted]        Working out the connection details…[/]")
+    else:
+        user_answer = await _prompt_or_cancel(
+            f"(anton) How do you authenticate with {tool_name}? "
+            "Describe what credentials you have (don't paste actual values)",
+        )
+        if not user_answer or not user_answer.strip():
+            return None
+        console.print()
+        console.print("[anton.muted]    Got it — working out the connection details…[/]")
+
+    llm_prompt = f"The user wants to connect to {repr(tool_name)}."
+    if user_answer:
+        llm_prompt += f" They said: {user_answer}"
+    else:
+        llm_prompt += " Determine the standard authentication fields for this service."
+    llm_prompt += (
+        "\n\nReturn ONLY valid JSON (no markdown fences, no commentary):\n"
+        '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
+        '"test_snippet":"python code that tests the connection using os.environ vars DS_FIELDNAME (uppercase field name with DS_ prefix) and prints ok on success, or empty string if untestable",'
+        '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
+        '"secret":true or false,"required":true or false,"description":"what it is"}]}'
     )
-    if not user_answer or not user_answer.strip():
-        return None
-
-    console.print()
-    console.print("[anton.muted]    Got it — working out the connection details…[/]")
 
     try:
         response = await session._llm.plan(
@@ -2703,14 +2742,7 @@ async def _handle_add_custom_datasource(
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"The user wants to connect to {repr(tool_name)} and said: {user_answer}\n\n"
-                        "Return ONLY valid JSON (no markdown fences, no commentary):\n"
-                        '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
-                        '"test_snippet":"python code that tests the connection using os.environ vars DS_FIELDNAME (uppercase field name with DS_ prefix) and prints ok on success, or empty string if untestable",'
-                        '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
-                        '"secret":true or false,"required":true or false,"description":"what it is"}]}'
-                    ),
+                    "content": llm_prompt,
                 }
             ],
             max_tokens=1024,
@@ -2946,6 +2978,44 @@ async def _run_connection_test(
         return True
 
 
+async def _show_credential_help(
+    console: Console,
+    session: "ChatSession",
+    service_name: str,
+    current_field,
+    all_fields: list,
+) -> None:
+    """Use the LLM to explain how to obtain a specific credential."""
+    field_names = ", ".join(f.name for f in all_fields)
+    try:
+        resp = await session._llm.plan(
+            system="You are a helpful assistant that guides users through obtaining credentials for services.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"I'm connecting to {service_name} and need to provide: {field_names}\n\n"
+                        f"I need help with the '{current_field.name}' field"
+                        f" ({current_field.description}).\n\n"
+                        "Give me a brief step-by-step guide on where and how to get this credential. "
+                        "Be concise — numbered steps, no fluff."
+                    ),
+                }
+            ],
+            max_tokens=512,
+        )
+        help_text = (resp.content or "").strip()
+    except Exception:
+        help_text = "Sorry, couldn't fetch help right now. Try checking the service's documentation."
+
+    console.print()
+    console.print(f"[anton.cyan](anton)[/] How to get [bold]{current_field.name}[/]:")
+    console.print()
+    for line in help_text.splitlines():
+        console.print(f"        {line}")
+    console.print()
+
+
 async def _handle_connect_datasource(
     console: Console,
     scratchpads: ScratchpadManager,
@@ -3168,6 +3238,7 @@ async def _handle_connect_datasource(
 
     engine_def: DatasourceEngine | None = None
     custom_source = False
+    llm_recognised = False
 
     if stripped_answer.isdigit() or (stripped_answer.lstrip("-").isdigit()):
         pick_num = int(stripped_answer)
@@ -3244,6 +3315,8 @@ async def _handle_connect_datasource(
             except Exception:
                 llm_text = "UNKNOWN"
 
+            llm_recognised = llm_text == "CUSTOM" or llm_text.startswith("MATCH:")
+
             if llm_text.startswith("MATCH:"):
                 matched_name = llm_text[len("MATCH:"):].strip()
                 matched_engine = next(
@@ -3264,7 +3337,8 @@ async def _handle_connect_datasource(
 
     if custom_source:
         result = await _handle_add_custom_datasource(
-            console, stripped_answer if not stripped_answer.isdigit() else "", registry, session
+            console, stripped_answer if not stripped_answer.isdigit() else "", registry, session,
+            known_service=llm_recognised,
         )
         if result is None:
             return session
@@ -3386,12 +3460,25 @@ async def _handle_connect_datasource(
     credentials: dict[str, str] = {}
 
     for f in fields_to_collect:
-        if f.secret:
-            value = await _prompt_or_cancel(f"(anton) {f.name}", password=True)
-        elif f.default:
-            value = await _prompt_or_cancel(f"(anton) {f.name}", default=f.default)
-        else:
-            value = await _prompt_or_cancel(f"(anton) {f.name}")
+        while True:
+            if f.secret:
+                value = await _prompt_or_cancel(
+                    f"(anton) {f.name}", password=True, show_help_hint=True,
+                )
+            elif f.default:
+                value = await _prompt_or_cancel(
+                    f"(anton) {f.name}", default=f.default, show_help_hint=True,
+                )
+            else:
+                value = await _prompt_or_cancel(
+                    f"(anton) {f.name}", show_help_hint=True,
+                )
+            if value == _HELP_SENTINEL:
+                await _show_credential_help(
+                    console, session, engine_def.display_name, f, fields_to_collect,
+                )
+                continue
+            break
         if value is None:
             return session
         if value:
