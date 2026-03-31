@@ -2809,7 +2809,16 @@ async def _handle_add_custom_datasource(
             continue
         if str(raw.get("value", "")).strip():
             continue
-        value = await _prompt_or_cancel(f"(anton) {f.name}", password=True)
+        while True:
+            value = await _prompt_or_cancel(
+                f"(anton) {f.name}", password=True, show_help_hint=True,
+            )
+            if value == _HELP_SENTINEL:
+                await _show_credential_help(
+                    console, session, display_name, f, fields,
+                )
+                continue
+            break
         if value is None:
             return None
         if value:
@@ -2823,7 +2832,16 @@ async def _handle_add_custom_datasource(
             continue
         if f.name in credentials:
             continue
-        value = await _prompt_or_cancel(f"(anton) {f.name}")
+        while True:
+            value = await _prompt_or_cancel(
+                f"(anton) {f.name}", show_help_hint=True,
+            )
+            if value == _HELP_SENTINEL:
+                await _show_credential_help(
+                    console, session, display_name, f, fields,
+                )
+                continue
+            break
         if value is None:
             return None
         if value:
