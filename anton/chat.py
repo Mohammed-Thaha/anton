@@ -1704,6 +1704,7 @@ async def _prompt_or_cancel(
     password: bool = False,
     choices: list[str] | None = None,
     choices_display: str = "",
+    allow_cancel: bool = True,
 ) -> str | None:
     """Prompt for free-text input; return None if the user presses Esc.
 
@@ -1712,20 +1713,24 @@ async def _prompt_or_cancel(
     If `choices` is given, re-prompts until input matches or user presses Esc.
     If `choices_display` is given, uses it for the styled bracket text instead of
     joining `choices` (useful when the display text differs from strict validation).
+    If `allow_cancel` is False, Esc is ignored and no footer is shown.
     """
     _esc = False
     bindings = KeyBindings()
 
-    @bindings.add("escape")
-    def _on_esc(event):
-        nonlocal _esc
-        _esc = True
-        event.app.exit(result="")
+    if allow_cancel:
+        @bindings.add("escape")
+        def _on_esc(event):
+            nonlocal _esc
+            _esc = True
+            event.app.exit(result="")
 
     pt_style = PTStyle.from_dict({"bottom-toolbar": "noreverse nounderline bg:default"})
 
     def _toolbar():
-        return HTML("<style fg='#5f9ea0' italic='true'>Esc to cancel</style>")
+        if not allow_cancel:
+            return ""
+        return HTML("<style fg='#ff69b4'>⏵⏵ Esc to cancel</style>")
 
     opts_text = choices_display or ("/".join(choices) if choices else "")
 

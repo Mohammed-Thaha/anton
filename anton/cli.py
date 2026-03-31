@@ -390,8 +390,9 @@ async def _animate_onboard(console, version: str, intro_lines: list[str], *, set
 
     while True:
         choice = await _prompt_or_cancel("(anton) Choose LLM Provider",
-                                   choices=["1", "2", "3", "q"],
-                                   default="1")
+                                   choices=["1", "2", "3"],
+                                   default="1",
+                                   allow_cancel=False)
 
         try:
             if choice == "1":
@@ -404,7 +405,8 @@ async def _animate_onboard(console, version: str, intro_lines: list[str], *, set
         except _SetupRetry:
             console.print()
             console.print("  [bold]1[/]  [link=https://mdb.ai][anton.cyan]Minds-Enterprise-Cloud[/][/link] [anton.success](recommended)[/]")
-            console.print("  [bold]2[/]  [anton.cyan]Bring your own key[/] [anton.muted]Anthropic / OpenAI[/]")
+            console.print("  [bold]2[/]  [anton.cyan]Minds-Enterprise-Server[/] [anton.muted]self-hosted[/]")
+            console.print("  [bold]3[/]  [anton.cyan]Bring your own key[/] [anton.muted]Anthropic / OpenAI[/]")
             console.print()
             continue
 

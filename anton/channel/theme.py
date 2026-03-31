@@ -41,29 +41,6 @@ def detect_color_mode() -> str:
     override = os.environ.get("ANTON_THEME", "").lower()
     if override in ("dark", "light"):
         return override
-
-    colorfgbg = os.environ.get("COLORFGBG", "")
-    if colorfgbg:
-        parts = colorfgbg.split(";")
-        try:
-            bg = int(parts[-1])
-            return "light" if bg > 6 else "dark"
-        except (ValueError, IndexError):
-            pass
-
-    if sys.platform == "darwin":
-        try:
-            result = subprocess.run(
-                ["defaults", "read", "-g", "AppleInterfaceStyle"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if result.returncode != 0:
-                return "light"
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
-
     return "dark"
 
 
