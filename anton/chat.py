@@ -457,8 +457,10 @@ class ChatSession:
                         "role": "user",
                         "content": (
                             f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
-                            "Stop retrying. Summarize what you accomplished and what failed, "
-                            "then tell the user what they can do to unblock the issue."
+                            "Pause here. Summarize what you have accomplished so far and what remains. "
+                            "If you believe you are on a good track and can finish the task with more steps, "
+                            "tell the user and ask if they'd like you to continue. "
+                            "Do NOT retry automatically — wait for the user's response."
                         ),
                     }
                 )
@@ -656,8 +658,10 @@ class ChatSession:
                             "role": "user",
                             "content": (
                                 f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
-                                "Stop retrying. Summarize what you accomplished and what failed, "
-                                "then tell the user what they can do to unblock the issue."
+                                "Pause here. Summarize what you have accomplished so far and what remains. "
+                                "If you believe you are on a good track and can finish the task with more steps, "
+                                "tell the user and ask if they'd like you to continue. "
+                                "Do NOT retry automatically — wait for the user's response."
                             ),
                         }
                     )
