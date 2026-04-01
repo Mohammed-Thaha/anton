@@ -4258,7 +4258,7 @@ async def _chat_loop(
                 parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
                 if cmd == "/llm":
-                    session = await _handle_setup(
+                    session = await _handle_setup_models(
                         console,
                         settings,
                         workspace,
@@ -4504,7 +4504,7 @@ async def _chat_loop(
                         default=True,
                         console=console,
                     ):
-                        session = await _handle_setup(
+                        session = await _handle_setup_models(
                             console,
                             settings,
                             workspace,
