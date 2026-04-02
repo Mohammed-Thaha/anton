@@ -603,7 +603,7 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
             console=console,
         )
         if not has_key:
-            webbrowser.open(f"{minds_url}/apiKeys")
+            webbrowser.open("https://mdb.ai/auth/realms/mindsdb/login-actions/registration?client_id=public-client&tab_id=LwCNoHBMz2I&client_data=eyJydSI6Imh0dHBzOi8vbWRiLmFpL2FwaUtleXMiLCJydCI6ImNvZGUiLCJybSI6ImZyYWdtZW50Iiwic3QiOiIxMzJjYmJiYi0yYWNiLTQ4MTItOWFhNC05NTc4ZWVjYzAxMTMifQ")
             console.print()
 
     while True:

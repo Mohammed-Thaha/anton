@@ -4114,11 +4114,35 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
     console.print("       [anton.muted]Ok to run, or skip straight to chatting?[/]")
     console.print()
 
-    answer = await _prompt_or_cancel(
-        "you>",
-        allow_cancel=True,
-    )
-    if answer is None:
+    from prompt_toolkit import PromptSession as _PS
+    from prompt_toolkit.key_binding import KeyBindings as _KB
+    from prompt_toolkit.formatted_text import HTML as _HTML
+    from prompt_toolkit.styles import Style as _PTStyle
+    from anton.channel.theme import get_palette as _gp
+
+    _you_color = _gp().user_prompt
+    _esc_pressed = False
+    _bindings = _KB()
+
+    @_bindings.add("escape")
+    def _on_esc(event):
+        nonlocal _esc_pressed
+        _esc_pressed = True
+        event.app.exit(result="")
+
+    _pt_style = _PTStyle.from_dict({"bottom-toolbar": "noreverse nounderline bg:default"})
+
+    def _toolbar():
+        return _HTML("<style fg='#ff69b4'>\u23f5\u23f5 Esc to skip</style>")
+
+    _ps = _PS(mouse_support=False, bottom_toolbar=_toolbar, style=_pt_style, key_bindings=_bindings)
+    try:
+        answer = await _ps.prompt_async(
+            [(f"bold fg:{_you_color}", "you>"), ("", " ")]
+        )
+    except EOFError:
+        return None
+    if _esc_pressed:
         return None
 
     answer_text = (answer or "").strip().lower()
@@ -4238,16 +4262,32 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
         ),
     })
 
-    # Show findings
+    # Show findings — typed out like the intro message
     console.print()
-    console.print("[anton.prompt]anton>[/] Dashboard is open in your browser!")
-    console.print()
-    console.print("       [bold]NVDA vs BTC \u2014 5-Year Investment Dashboard[/]")
-    console.print("       [anton.muted]Single self-contained HTML file \u00b7 6 interactive tabs[/]")
-    console.print()
-    console.print("       [bold]Tabs:[/] Performance \u00b7 Risk \u00b7 Monte Carlo \u00b7 Annual \u00b7 Scorecard \u00b7 Decision")
-    console.print()
-    console.print("       This is what Anton can do. Now it\u2019s your turn \u2014 ask me anything!")
+    _lines = [
+        "Everything worked! I pulled 5 years of data from Yahoo Finance,",
+        "ran the numbers on NVIDIA vs Bitcoin, and built you a full",
+        "interactive dashboard \u2014 it\u2019s open in your browser.",
+        "",
+        "6 tabs to explore: Performance \u00b7 Risk \u00b7 Monte Carlo \u00b7 Annual \u00b7",
+        "Scorecard \u00b7 Decision.",
+        "",
+        "My take? If I had money to put down, NVIDIA wins this one.",
+        "",
+        "Ask me follow-ups about the data, a completely different question,",
+        "or connect your own data \u2014 I\u2019m here. What\u2019s next, boss?",
+    ]
+    for li, line in enumerate(_lines):
+        if li == 0:
+            console.file.write("anton> ")
+        else:
+            console.file.write("       ")
+        for ch in line:
+            console.file.write(ch)
+            console.file.flush()
+            _time.sleep(0.015)
+        console.file.write("\n")
+        console.file.flush()
     console.print()
 
     return "_AGENT_ZERO_DONE"
@@ -4399,8 +4439,9 @@ async def _chat_loop(
             pass  # demo failed — just continue to normal chat
         _persist_first_run_done(settings)
 
-    console.print("[anton.muted] Chat with me, type '/help' for commands or 'exit' to quit.[/]")
-    console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
+    if not first_run:
+        console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
+    console.print("[anton.muted] type '/help' for commands or 'exit' to quit.[/]")
     console.print()
 
     from anton.analytics import send_event
