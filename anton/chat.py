@@ -4295,8 +4295,6 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
         "",
         "My take? If I had money to put down, NVIDIA wins this one.",
         "",
-        "Ask me follow-ups about the data, a completely different question,",
-        "or connect your own data \u2014 I\u2019m here. What\u2019s next, boss?",
     ]
     from anton.channel.theme import get_palette as _gp2
     _cyan = _gp2().cyan
@@ -4313,6 +4311,9 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
             _time.sleep(0.015)
         console.file.write("\n")
         console.file.flush()
+    console.print()
+    console.print("[anton.muted] Ask me follow-ups, a completely different question, or connect your own data.[/]")
+    console.print("[anton.muted] What\u2019s next, boss?[/]")
     console.print()
 
     return "_AGENT_ZERO_DONE"
