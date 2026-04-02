@@ -748,11 +748,10 @@ def _validate_openai_probe_response(response) -> None:
     raise ValueError(f"Unexpected validation response: {content or '<empty>'}")
 
 
-def _handle_retry(settings, ws, console) -> bool:
+def _handle_retry(settings, ws, console, retry_fn) -> None:
     retry = Confirm.ask("  Try again?", default=True, console=console)
     if retry:
-        _setup_openai(settings, ws)
-        return
+        retry_fn(settings, ws)
     else:
         raise _SetupRetry()
 
@@ -779,10 +778,10 @@ def _setup_anthropic(settings, ws) -> None:
         _validate_with_spinner(console, model, _test)
     except anthropic.AuthenticationError:
         console.print("  [anton.error]Authentication failed. Check your API key.[/]")
-        _handle_retry(settings, ws, console)
+        _handle_retry(settings, ws, console, retry_fn=_setup_anthropic)
     except Exception as exc:
         console.print(f"  [anton.error]Failed:[/] {exc}")
-        _handle_retry(settings, ws, console)
+        _handle_retry(settings, ws, console, retry_fn=_setup_anthropic)
 
     settings.anthropic_api_key = api_key
     settings.planning_provider = "anthropic"
@@ -823,10 +822,10 @@ def _setup_openai(settings, ws) -> None:
         _validate_with_spinner(console, model, _test)
     except openai.AuthenticationError:
         console.print("  [anton.error]Authentication failed. Check your API key.[/]")
-        _handle_retry(settings, ws, console)
+        _handle_retry(settings, ws, console, retry_fn=_setup_openai)
     except Exception as exc:
         console.print(f"  [anton.error]Failed:[/] {exc}")
-        _handle_retry(settings, ws, console)
+        _handle_retry(settings, ws, console, retry_fn=_setup_openai)
 
     settings.openai_api_key = api_key
     settings.planning_provider = "openai"
