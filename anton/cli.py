@@ -748,10 +748,18 @@ def _validate_openai_probe_response(response) -> None:
     raise ValueError(f"Unexpected validation response: {content or '<empty>'}")
 
 
+def _handle_retry(settings, ws, console, retry_fn) -> None:
+    retry = Confirm.ask("  Try again?", default=True, console=console)
+    if retry:
+        retry_fn(settings, ws)
+    else:
+        raise _SetupRetry()
+
+
 def _setup_anthropic(settings, ws) -> None:
     """Set up Anthropic with a single model for both reasoning and coding."""
-    from rich.prompt import Confirm
 
+    import anthropic
     console.print()
     while True:
         api_key = _setup_prompt("API key", is_password=True)
@@ -764,19 +772,16 @@ def _setup_anthropic(settings, ws) -> None:
 
     try:
         def _test():
-            import anthropic
             client = anthropic.Anthropic(api_key=api_key)
             client.messages.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}])
 
         _validate_with_spinner(console, model, _test)
+    except anthropic.AuthenticationError:
+        console.print("  [anton.error]Authentication failed. Check your API key.[/]")
+        _handle_retry(settings, ws, console, retry_fn=_setup_anthropic)
     except Exception as exc:
         console.print(f"  [anton.error]Failed:[/] {exc}")
-        retry = Confirm.ask("  Try again?", default=True, console=console)
-        if retry:
-            _setup_anthropic(settings, ws)
-            return
-        else:
-            raise _SetupRetry()
+        _handle_retry(settings, ws, console, retry_fn=_setup_anthropic)
 
     settings.anthropic_api_key = api_key
     settings.planning_provider = "anthropic"
@@ -792,7 +797,7 @@ def _setup_anthropic(settings, ws) -> None:
 
 def _setup_openai(settings, ws) -> None:
     """Set up OpenAI with a single model for both reasoning and coding."""
-    from rich.prompt import Confirm
+    import openai
 
     console.print()
     while True:
@@ -806,7 +811,6 @@ def _setup_openai(settings, ws) -> None:
 
     try:
         def _test():
-            import openai
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(**build_chat_completion_kwargs(
                 model=model,
@@ -816,14 +820,12 @@ def _setup_openai(settings, ws) -> None:
             _validate_openai_probe_response(response)
 
         _validate_with_spinner(console, model, _test)
+    except openai.AuthenticationError:
+        console.print("  [anton.error]Authentication failed. Check your API key.[/]")
+        _handle_retry(settings, ws, console, retry_fn=_setup_openai)
     except Exception as exc:
         console.print(f"  [anton.error]Failed:[/] {exc}")
-        retry = Confirm.ask("  Try again?", default=True, console=console)
-        if retry:
-            _setup_openai(settings, ws)
-            return
-        else:
-            raise _SetupRetry()
+        _handle_retry(settings, ws, console, retry_fn=_setup_openai)
 
     settings.openai_api_key = api_key
     settings.planning_provider = "openai"
