@@ -3029,8 +3029,25 @@ async def _run_connection_test(
             pad = await scratchpads.get_or_create("__datasource_test__")
             await pad.reset()
             if engine_def.pip:
-                await pad.install_packages([engine_def.pip])
-            cell = await pad.execute(engine_def.test_snippet)
+                pip_pkgs = engine_def.pip if isinstance(engine_def.pip, list) else [engine_def.pip]
+                install_result = await pad.install_packages(pip_pkgs)
+                if "failed" in (install_result or "").lower():
+                    console.print()
+                    console.print(f"[anton.warning](anton)[/] Package install issue: {install_result[:200]}")
+
+            # Run the test, retry up to 2 times on ModuleNotFoundError
+            cell = None
+            for _attempt in range(3):
+                cell = await pad.execute(engine_def.test_snippet)
+                if cell.error and "ModuleNotFoundError" in cell.error:
+                    # Extract the missing module and try to install it
+                    import re as _re
+                    _match = _re.search(r"No module named '([^']+)'", cell.error)
+                    if _match:
+                        _missing = _match.group(1).split(".")[0]
+                        await pad.install_packages([_missing])
+                        continue
+                break
         finally:
             _restore_namespaced_env(vault)
 
