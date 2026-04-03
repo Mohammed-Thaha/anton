@@ -6,11 +6,11 @@ import http.server
 import threading
 import pytest
 
-from scripts.e2e.harness import (
+from tests.e2e.harness import (
     assert_exit_fail, assert_exit_ok, assert_not_output, assert_output,
     base_env, run_anton,
 )
-from scripts.e2e.stub_server import StubServer
+from tests.e2e.stub_server import StubServer
 
 
 def test_missing_api_key_shows_clean_message(cfg, stub, tmp_path):

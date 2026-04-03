@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.e2e.harness import (
+from tests.e2e.harness import (
     E2EConfig, assert_exit_ok, assert_output, base_env, find_history_files, run_anton,
 )
 

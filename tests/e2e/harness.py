@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.e2e.stub_server import StubServer
+from tests.e2e.stub_server import StubServer
 
 @dataclass
 class RunResult:

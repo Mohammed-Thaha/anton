@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.e2e.harness import assert_exit_ok, base_env, run_anton
-from scripts.e2e.stub_server import StubServer
+from tests.e2e.harness import assert_exit_ok, base_env, run_anton
+from tests.e2e.stub_server import StubServer
 
 
 _SECRET_KEY = "DS_POSTGRES_PROD__PASSWORD"

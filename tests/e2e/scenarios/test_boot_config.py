@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.e2e.harness import (
+from tests.e2e.harness import (
     LiveProvider, assert_exit_fail, assert_exit_ok, assert_not_output,
     assert_output, base_env, run_anton,
 )

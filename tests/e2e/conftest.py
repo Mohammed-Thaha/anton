@@ -13,8 +13,8 @@ from typing import Generator
 
 import pytest
 
-from scripts.e2e.harness import E2EConfig, LiveProvider
-from scripts.e2e.stub_server import StubServer
+from tests.e2e.harness import E2EConfig, LiveProvider
+from tests.e2e.stub_server import StubServer
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
