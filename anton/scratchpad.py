@@ -353,8 +353,15 @@ class Scratchpad:
                 "openai": "OPENAI_API_KEY",
                 "openai-compatible": "OPENAI_API_KEY",
             }.get(self._coding_provider, "")
-            if sdk_key and sdk_key not in env:
+            if sdk_key:
                 env[sdk_key] = self._coding_api_key
+        # For openai-compatible (Minds), ANTON_OPENAI_BASE_URL takes priority
+        # over any OPENAI_BASE_URL in the user's shell. Without this, get_llm()
+        # defaults to api.openai.com and the mdb_ key gets a 401.
+        if self._coding_provider == "openai-compatible":
+            base_url = env.get("ANTON_OPENAI_BASE_URL") or env.get("OPENAI_BASE_URL") or ""
+            if base_url:
+                env["OPENAI_BASE_URL"] = base_url
         # Pass uv path so the boot script can use it for auto-installing
         # missing modules (same installer that created the venv).
         uv = self._find_uv()
