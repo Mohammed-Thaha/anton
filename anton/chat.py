@@ -38,6 +38,7 @@ from anton.llm.provider import (
 )
 from anton.scratchpad import ScratchpadManager
 from anton.tools import (
+    CONNECT_DATASOURCE_TOOL,
     MEMORIZE_TOOL,
     RECALL_TOOL,
     SCRATCHPAD_TOOL,
@@ -301,6 +302,7 @@ class ChatSession:
             tools.append(_MT)
         if self._episodic is not None and self._episodic.enabled:
             tools.append(RECALL_TOOL)
+        tools.append(CONNECT_DATASOURCE_TOOL)
         return tools
 
     async def close(self) -> None:

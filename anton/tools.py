@@ -138,6 +138,33 @@ RECALL_TOOL = {
     },
 }
 
+CONNECT_DATASOURCE_TOOL = {
+    "name": "connect_new_datasource",
+    "description": (
+        "Connect a new data source to Anton's Local Vault. Call this when the user "
+        "asks a question that requires data from a source that isn't connected yet "
+        "(e.g. email, database, CRM, API). This starts an interactive connection flow "
+        "where the user enters their credentials.\n\n"
+        "Pass the datasource type/name (e.g. 'gmail', 'postgres', 'salesforce', 'hubspot'). "
+        "Anton will match it to the right connector and guide the user through setup.\n\n"
+        "Do NOT print any message before calling this tool — it handles the user-facing output."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "engine": {
+                "type": "string",
+                "description": "The datasource type or name (e.g. 'gmail', 'postgres', 'snowflake', 'hubspot')",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief explanation of why this datasource is needed",
+            },
+        },
+        "required": ["engine"],
+    },
+}
+
 SCRATCHPAD_TOOL = {
     "name": "scratchpad",
     "description": (
@@ -400,6 +427,34 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return f"Unknown scratchpad action: {action}"
 
 
+async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str:
+    """Handle connect_new_datasource tool call — interactive connection flow."""
+    engine = tc_input.get("engine", "")
+    reason = tc_input.get("reason", "")
+    if not engine:
+        return "Engine name is required."
+
+    console = session._console
+    if console is None:
+        return "Cannot connect datasource — no console available."
+
+    console.print()
+    console.print(
+        f"[anton.prompt]anton>[/] I can help with that \u2014 let's connect [bold]{engine}[/] to Anton."
+    )
+
+    from anton.chat import _handle_connect_datasource
+
+    await _handle_connect_datasource(
+        console,
+        session._scratchpads,
+        session,
+        prefill=engine,
+    )
+
+    return f"Connection flow for '{engine}' completed. Check if it was successful and continue helping the user."
+
+
 async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) -> str:
     """Dispatch a tool call by name. Returns result text."""
     if tool_name == "memorize":
@@ -408,5 +463,7 @@ async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) ->
         return await handle_scratchpad(session, tc_input)
     elif tool_name == "recall":
         return await handle_recall(session, tc_input)
+    elif tool_name == "connect_new_datasource":
+        return await handle_connect_datasource(session, tc_input)
     else:
         return f"Unknown tool: {tool_name}"
