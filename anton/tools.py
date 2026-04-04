@@ -443,7 +443,12 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
         f"[anton.prompt]anton>[/] I can help with that \u2014 let's connect [bold]{engine}[/] to Anton."
     )
 
-    from anton.chat import _handle_connect_datasource
+    from anton.chat import _handle_connect_datasource, _prompt_or_cancel
+    from anton.data_vault import DataVault
+
+    # Check which connections exist before
+    vault = DataVault()
+    before = {f"{c['engine']}-{c['name']}" for c in vault.list_connections()}
 
     await _handle_connect_datasource(
         console,
@@ -452,7 +457,40 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
         prefill=engine,
     )
 
-    return f"Connection flow for '{engine}' completed. Check if it was successful and continue helping the user."
+    # Check if a new connection was actually added
+    after = {f"{c['engine']}-{c['name']}" for c in vault.list_connections()}
+    new_connections = after - before
+
+    if new_connections:
+        slug = next(iter(new_connections))
+        return (
+            f"Successfully connected '{slug}'. The datasource is now available. "
+            f"Continue helping the user with their original request using this data source."
+        )
+    else:
+        # User cancelled or connection failed — show briefly with spinner
+        # so user knows the agent is picking back up
+        from rich.live import Live
+        from rich.spinner import Spinner
+        from rich.text import Text
+        import asyncio
+
+        console.print()
+        console.print("[anton.muted]  Connection was cancelled.[/]")
+        with Live(
+            Spinner("dots", text=Text("", style="anton.muted"), style="anton.cyan"),
+            console=console,
+            refresh_per_second=10,
+            transient=True,
+        ):
+            await asyncio.sleep(1.5)
+        console.print()
+        return (
+            f"The user cancelled or skipped the '{engine}' connection setup. "
+            f"Do NOT retry connecting automatically. Ask the user how they'd like to proceed — "
+            f"they may want to try a different approach, provide the data another way, "
+            f"or move on to something else."
+        )
 
 
 async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) -> str:
