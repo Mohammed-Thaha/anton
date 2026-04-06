@@ -47,7 +47,15 @@ from anton.tools import (
     prepare_scratchpad_exec,
 )
 from anton.checks import TokenLimitInfo, TokenLimitStatus, check_minds_token_limits
-from anton.minds_http import minds_request
+from anton.minds_client import (
+    normalize_minds_url,
+    describe_minds_connection_error,
+    list_minds,
+    get_mind,
+    refresh_knowledge,
+    list_datasources,
+    test_llm,
+)
 from anton.data_vault import DataVault, _slug_env_prefix
 from anton.datasource_registry import (
     DatasourceEngine,
@@ -1425,7 +1433,7 @@ def _rebuild_session(
         cortex.mode = settings.memory_mode
 
     # Refresh mind knowledge from remote server
-    _minds_refresh_knowledge(settings, cortex)
+    refresh_knowledge(settings, cortex)
 
     runtime_context = _build_runtime_context(settings)
     api_key = (
@@ -1839,14 +1847,6 @@ async def _handle_setup_memory(
     console.print()
 
 
-def _normalize_minds_url(url: str) -> str:
-    """Add https:// if no scheme present, strip trailing slash."""
-    url = url.strip()
-    if url and not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
-    return url.rstrip("/")
-
-
 def _mask_secret(value: str, *, keep: int = 4) -> str:
     if len(value) <= keep * 2:
         return "*" * max(len(value), 3)
@@ -1957,161 +1957,6 @@ async def _prompt_minds_api_key(
         return current_key
     return None
 
-
-def _describe_minds_connection_error(err: Exception) -> tuple[str, str]:
-    import socket
-    import ssl
-
-    if isinstance(err, urllib.error.HTTPError):
-        reason = err.reason or "HTTP error"
-        if err.code in (401, 403):
-            return (
-                f"Connection failed (HTTP {err.code}: {reason}). The server rejected the request.",
-                "Common reasons: invalid or expired credentials, insufficient access, or the wrong server/endpoint.",
-            )
-        if 400 <= err.code < 500:
-            return (
-                f"Connection failed (HTTP {err.code}: {reason}). The server rejected the request.",
-                "Common reasons: wrong URL, malformed request, or access restrictions on that endpoint.",
-            )
-        if err.code >= 500:
-            return (
-                f"Connection failed (HTTP {err.code}: {reason}). The server returned an error.",
-                "Common reasons: server-side failure or a temporary outage.",
-            )
-        return (
-            f"Connection failed (HTTP {err.code}: {reason}).",
-            "Common reasons: a server response Anton could not use or a transient connectivity problem.",
-        )
-
-    if isinstance(err, urllib.error.URLError):
-        reason = getattr(err, "reason", None)
-        if isinstance(reason, ssl.SSLCertVerificationError):
-            return (
-                "Connection failed during TLS certificate verification.",
-                "Common reasons: a self-signed, expired, or otherwise untrusted certificate.",
-            )
-        if (
-            isinstance(reason, (TimeoutError, socket.timeout))
-            or "timed out" in str(reason).lower()
-        ):
-            return (
-                "Connection failed because the request timed out.",
-                "Common reasons: the server is slow or unavailable, the URL is wrong, or there is a network path issue.",
-            )
-        return (
-            f"Connection failed ({err}).",
-            "Common reasons: network connectivity problems, DNS issues, or a server Anton could not reach.",
-        )
-
-    if "timed out" in str(err).lower():
-        return (
-            "Connection failed because the request timed out.",
-            "Common reasons: the server is slow or unavailable, the URL is wrong, or there is a network path issue.",
-        )
-
-    return (
-        f"Connection failed ({err}).",
-        "Common reasons: network connectivity problems, authentication issues, or a server-side failure.",
-    )
-
-
-def _minds_list_minds(base_url: str, api_key: str, verify: bool = True) -> list[dict]:
-    """Fetch minds list from a Minds server using stdlib urllib."""
-    import json as _json
-
-    url = f"{base_url}/api/v1/minds/"  # trailing slash required
-    raw = minds_request(url, api_key, verify=verify)
-    data = _json.loads(raw.decode())
-
-    if isinstance(data, list):
-        return data
-    return data.get("minds", data if isinstance(data, list) else [])
-
-
-
-
-def _minds_get_mind(
-    base_url: str, api_key: str, mind_name: str, verify: bool = True
-) -> dict | None:
-    """Fetch a single mind's details from a Minds server."""
-    import json as _json
-
-    url = f"{base_url}/api/v1/minds/{mind_name}"
-    try:
-        raw = minds_request(url, api_key, verify=verify, timeout=15)
-        return _json.loads(raw.decode())
-    except Exception:
-        return None
-
-
-def _minds_refresh_knowledge(settings: AntonSettings, cortex) -> None:
-    """Fetch the configured mind's parameters and update the memory topic file."""
-    if not settings.minds_api_key or not settings.minds_mind_name or cortex is None:
-        return
-
-    mind = _minds_get_mind(
-        _normalize_minds_url(settings.minds_url),
-        settings.minds_api_key,
-        settings.minds_mind_name,
-        verify=settings.minds_ssl_verify,
-    )
-    if not mind:
-        return
-
-    params = mind.get("parameters", {}) or {}
-    parts = []
-    if params.get("system_prompt"):
-        parts.append(params["system_prompt"])
-    if params.get("prompt_template"):
-        parts.append(params["prompt_template"])
-
-    if not parts:
-        return
-
-    knowledge = "\n\n".join(parts)
-    topic_content = f"# Minds — {settings.minds_mind_name}\n\n{knowledge}\n"
-    topic_path = cortex.project_hc._topics_dir / "minds-datasource.md"
-    cortex.project_hc._topics_dir.mkdir(parents=True, exist_ok=True)
-    cortex.project_hc._encode_with_lock(topic_path, topic_content, mode="write")
-
-
-def _minds_list_datasources(
-    base_url: str, api_key: str, verify: bool = True
-) -> list[dict]:
-    """Fetch datasource list from a Minds server using stdlib urllib."""
-    import json as _json
-
-    url = f"{base_url}/api/v1/datasources"
-    raw = minds_request(url, api_key, verify=verify)
-    data = _json.loads(raw.decode())
-
-    # Response may be a list or a dict with a "datasources" key
-    if isinstance(data, list):
-        return data
-    return data.get("datasources", data if isinstance(data, list) else [])
-
-
-def _minds_test_llm(base_url: str, api_key: str, verify: bool = True) -> bool:
-    """Test if the Minds server supports LLM endpoints (_code_/_reason_ models)."""
-    import json as _json
-
-    url = f"{base_url}/api/v1/chat/completions"
-    payload = _json.dumps(build_chat_completion_kwargs(
-        model="_code_",
-        messages=[{"role": "user", "content": "ping"}],
-        max_tokens=1,
-    )).encode()
-
-    try:
-        minds_request(url, api_key, method="POST", payload=payload, verify=verify)
-        return True
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            return "rate_limited"
-        return False
-    except Exception:
-        return False
 
 
 _MINDS_KEYS = {
@@ -2372,11 +2217,11 @@ async def _handle_connect(
     console.print()
 
     # --- Prompt for URL and API key (use saved values as defaults) ---
-    saved_url = _normalize_minds_url(settings.minds_url)
+    saved_url = normalize_minds_url(settings.minds_url)
     minds_url = await _prompt_or_cancel("(anton) Minds server URL", default=saved_url)
     if minds_url is None:
         return session
-    minds_url = _normalize_minds_url(minds_url)
+    minds_url = normalize_minds_url(minds_url)
 
     saved_key = settings.minds_api_key or ""
     api_key = await _prompt_minds_api_key(
@@ -2397,14 +2242,14 @@ async def _handle_connect(
         console.print()
         console.print(f"[anton.muted]Connecting to {minds_url}...[/]")
         try:
-            minds = _minds_list_minds(minds_url, api_key, verify=ssl_verify)
+            minds = list_minds(minds_url, api_key, verify=ssl_verify)
             break
         except (urllib.error.URLError, urllib.error.HTTPError) as err:
-            headline, advice = _describe_minds_connection_error(err)
+            headline, advice = describe_minds_connection_error(err)
             console.print(f"[anton.error]{headline}[/]")
             console.print(f"[anton.muted]{advice}[/]")
         except Exception as err:
-            headline, advice = _describe_minds_connection_error(err)
+            headline, advice = describe_minds_connection_error(err)
             console.print(f"[anton.error]{headline}[/]")
             console.print(f"[anton.muted]{advice}[/]")
 
@@ -2489,7 +2334,7 @@ async def _handle_connect(
     # --- Resolve engine type from datasources list ---
     if ds_name:
         try:
-            all_datasources = _minds_list_datasources(
+            all_datasources = list_datasources(
                 minds_url, api_key, verify=ssl_verify
             )
             for ds in all_datasources:
@@ -2522,7 +2367,7 @@ async def _handle_connect(
 
     # --- Test if the Minds server also supports LLM endpoints ---
     # (silenced: was printing "Testing LLM endpoints..." and "not available" messages)
-    llm_ok = _minds_test_llm(minds_url, api_key, verify=ssl_verify)
+    llm_ok = test_llm(minds_url, api_key, verify=ssl_verify)
 
     if llm_ok:
         console.print(
