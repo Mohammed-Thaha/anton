@@ -33,6 +33,8 @@ from anton.commands.datasource import (
     handle_list_data_sources,
     handle_test_datasource
 )
+from anton.minds_client import test_llm
+
 
 
 def _reexec() -> None:
@@ -645,17 +647,12 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
     ws.set_secret("ANTON_MINDS_URL", minds_url)
 
     # Test connection with a spinner
-    from anton.minds_client import test_llm
 
     ssl_verify = True
     llm_ok = False
     rate_limited = False
 
-    with Live(
-        Spinner("dots", text="  Connecting...", style="anton.cyan"),
-        console=console,
-        transient=True,
-    ):
+    with Live(Spinner("dots", text="  Connecting...", style="anton.cyan"), console=console, transient=True):
         result = test_llm(minds_url, api_key, verify=True)
         if result == "rate_limited":
             rate_limited = True
@@ -1162,7 +1159,7 @@ def connect_data_source(
 @app.command("list")
 def list_data_sources(ctx: typer.Context) -> None:
     """List all saved data source connections in the Local Vault."""
-    asyncio.run(handle_list_data_sources(console))
+    handle_list_data_sources(console)
 
 
 @app.command("edit")
