@@ -525,7 +525,7 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
     import webbrowser
     from pathlib import Path
 
-    from anton.chat import _prompt_or_cancel
+    from anton.prompt_utils import prompt_or_cancel
 
     console = session._console
 
@@ -543,7 +543,7 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
     console.print(f"  [anton.muted]{file_path.name}[/]")
     console.print()
 
-    choice = await _prompt_or_cancel(
+    choice = await prompt_or_cancel(
         "  (anton) Preview, publish, or skip?",
         choices=["preview", "publish", "skip", "p", "s"],
         choices_display="preview/publish/skip",
@@ -560,16 +560,20 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
         console.print("  [anton.muted]Opened in browser.[/]")
         console.print()
 
-        # After preview, offer to publish
-        pub_choice = await _prompt_or_cancel(
-            "  (anton) Publish to the web?",
-            choices=["y", "n"],
-            choices_display="y/n",
-            default="y",
+        # After preview, offer to publish or keep chatting for changes
+        pub_choice = await prompt_or_cancel(
+            "  (anton) Publish to the web, or keep chatting to make changes?",
+            choices=["publish", "chat", "p", "c"],
+            choices_display="publish/chat",
+            default="chat",
         )
-        if pub_choice is None or pub_choice == "n":
+        if pub_choice is None or pub_choice in ("chat", "c"):
+            console.print("  [anton.muted]Want to make changes? Just keep chatting.[/]")
             console.print()
-            return "User previewed the dashboard but chose not to publish."
+            return (
+                "User previewed the dashboard and wants to keep chatting. "
+                "They may ask for changes — wait for their input."
+            )
         choice = "publish"
 
     # Publish flow
@@ -581,7 +585,7 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
     if not settings.minds_api_key:
         console.print("  [anton.muted]To publish you need a free Minds account.[/]")
         console.print()
-        has_key = await _prompt_or_cancel(
+        has_key = await prompt_or_cancel(
             "  (anton) Do you have an mdb.ai API key?",
             choices=["y", "n"],
             choices_display="y/n",
@@ -598,7 +602,7 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
             )
             console.print()
 
-        api_key = await _prompt_or_cancel("  (anton) API key", password=True)
+        api_key = await prompt_or_cancel("  (anton) API key", password=True)
         if api_key is None or not api_key.strip():
             console.print()
             return "User cancelled publish."

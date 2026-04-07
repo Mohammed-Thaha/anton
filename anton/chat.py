@@ -3704,7 +3704,7 @@ async def _handle_publish(
     if not settings.minds_api_key:
         console.print("  [anton.muted]To publish dashboards you need a free Minds account.[/]")
         console.print()
-        has_key = await _prompt_or_cancel(
+        has_key = await prompt_or_cancel(
             "  Do you have an mdb.ai API key?",
             choices=["y", "n"],
             choices_display="y/n",
@@ -3721,7 +3721,7 @@ async def _handle_publish(
             )
             console.print()
 
-        api_key = await _prompt_or_cancel("  API key", password=True)
+        api_key = await prompt_or_cancel("  API key", password=True)
         if api_key is None or not api_key.strip():
             console.print()
             return
@@ -3768,7 +3768,7 @@ async def _handle_publish(
                 console.print(f"\n  [anton.muted]m  Show more ({len(html_files) - offset - PAGE_SIZE} remaining)[/]")
 
             console.print()
-            choice = await _prompt_or_cancel("  Select", default="1")
+            choice = await prompt_or_cancel("  Select", default="1")
             if choice is None:
                 console.print()
                 return
