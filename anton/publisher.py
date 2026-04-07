@@ -12,7 +12,7 @@ from pathlib import Path
 from anton.minds_http import minds_request
 
 
-DEFAULT_PUBLISH_URL = "https://4eqbi9b2pg.execute-api.us-east-1.amazonaws.com/Prod"
+DEFAULT_PUBLISH_URL = "https://4nton.ai"
 
 # Patterns that capture relative paths from HTML attributes and CSS url()
 _REF_PATTERNS = [
