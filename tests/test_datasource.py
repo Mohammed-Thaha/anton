@@ -17,14 +17,16 @@ from anton.chat import (
     _build_datasource_context,
     _handle_add_custom_datasource,
     _handle_connect_datasource,
-    _handle_list_data_sources,
-    _handle_remove_data_source,
     _handle_test_datasource,
     _register_secret_vars,
     _restore_namespaced_env,
     _run_connection_test,
     _scrub_credentials,
     parse_connection_slug,
+)
+from anton.commands.datasource import (
+    handle_list_data_sources,
+    handle_remove_data_source,
 )
 from anton.cli import app as _cli_app
 from anton.data_vault import DataVault, _slug_env_prefix
@@ -1133,7 +1135,7 @@ class TestHandleListDataSources:
     def test_empty_vault_shows_message(self, vault_dir):
         console = MagicMock()
         with patch("anton.chat.DataVault", return_value=DataVault(vault_dir=vault_dir)):
-            _handle_list_data_sources(console)
+            handle_list_data_sources(console)
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "No data sources" in printed or "connect" in printed
 
@@ -1157,10 +1159,10 @@ class TestHandleListDataSources:
         rich_console = Console(file=buf, highlight=False, markup=False)
 
         with (
-            patch("anton.chat.DataVault", return_value=vault),
-            patch("anton.chat.DatasourceRegistry", return_value=registry),
+            patch("anton.commands.datasource.DataVault", return_value=vault),
+            patch("anton.commands.datasource.DatasourceRegistry", return_value=registry),
         ):
-            _handle_list_data_sources(rich_console)
+            handle_list_data_sources(rich_console)
 
         output = buf.getvalue()
         assert "postgresql-prod_db" in output
@@ -1176,10 +1178,10 @@ class TestHandleListDataSources:
         rich_console = Console(file=buf, highlight=False, markup=False)
 
         with (
-            patch("anton.chat.DataVault", return_value=vault),
-            patch("anton.chat.DatasourceRegistry", return_value=registry),
+            patch("anton.commands.datasource.DataVault", return_value=vault),
+            patch("anton.commands.datasource.DatasourceRegistry", return_value=registry),
         ):
-            _handle_list_data_sources(rich_console)
+            handle_list_data_sources(rich_console)
 
         output = buf.getvalue()
         assert "incomplete" in output.lower()
@@ -1413,11 +1415,11 @@ class TestRemoveDatasourceFlow:
         console = Console(quiet=True)
 
         with (
-            patch("anton.chat.DataVault", return_value=vault),
-            patch("anton.chat.DatasourceRegistry", return_value=registry),
-            patch("anton.chat.prompt_or_cancel", new=AsyncMock(return_value="y")),
+            patch("anton.commands.datasource.DataVault", return_value=vault),
+            patch("anton.commands.datasource.DatasourceRegistry", return_value=registry),
+            patch("anton.commands.datasource.prompt_or_cancel", new=AsyncMock(return_value="y")),
         ):
-            await _handle_remove_data_source(console, "postgresql-prod_db")
+            await handle_remove_data_source(console, "postgresql-prod_db")
 
         assert vault.load("postgresql", "prod_db") is None
 
@@ -1427,11 +1429,11 @@ class TestRemoveDatasourceFlow:
         console = Console(quiet=True)
 
         with (
-            patch("anton.chat.DataVault", return_value=vault),
-            patch("anton.chat.DatasourceRegistry", return_value=registry),
-            patch("anton.chat.prompt_or_cancel", new=AsyncMock(return_value="n")),
+            patch("anton.commands.datasource.DataVault", return_value=vault),
+            patch("anton.commands.datasource.DatasourceRegistry", return_value=registry),
+            patch("anton.commands.datasource.prompt_or_cancel", new=AsyncMock(return_value="n")),
         ):
-            await _handle_remove_data_source(console, "postgresql-prod_db")
+            await handle_remove_data_source(console, "postgresql-prod_db")
 
         assert vault.load("postgresql", "prod_db") is not None
 
@@ -1441,10 +1443,10 @@ class TestRemoveDatasourceFlow:
         console = MagicMock()
 
         with (
-            patch("anton.chat.DataVault", return_value=vault),
-            patch("anton.chat.DatasourceRegistry", return_value=registry),
+            patch("anton.commands.datasource.DataVault", return_value=vault),
+            patch("anton.commands.datasource.DatasourceRegistry", return_value=registry),
         ):
-            await _handle_remove_data_source(console, "postgresql-ghost")
+            await handle_remove_data_source(console, "postgresql-ghost")
 
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "not found" in printed.lower() or "No connection" in printed
@@ -1454,8 +1456,8 @@ class TestRemoveDatasourceFlow:
         vault = DataVault(vault_dir=vault_dir)
         console = MagicMock()
 
-        with patch("anton.chat.DataVault", return_value=vault):
-            await _handle_remove_data_source(console, "nohyphen")
+        with patch("anton.commands.datasource.DataVault", return_value=vault):
+            await handle_remove_data_source(console, "nohyphen")
 
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "Invalid" in printed or "engine-name" in printed
