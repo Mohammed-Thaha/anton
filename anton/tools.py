@@ -2,63 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from anton.chat import ChatSession
 
-
-@dataclass
-class ToolDef:
-    name: str
-    description: str
-    input_schema: dict
-    handler: Callable  # async (session, tc_input) -> str
-    stream_handler: Callable | None = None  # async generator version
-
-
-_registry: dict[str, ToolDef] = {}
-
-
-def tool(name: str, *, description: str, input_schema: dict):
-    """Decorator to register a tool with its handler."""
-    def decorator(fn):
-        _registry[name] = ToolDef(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            handler=fn,
-        )
-        return fn
-    return decorator
-
-
-def tool_stream(name: str):
-    """Decorator to register a streaming handler for an existing tool."""
-    def decorator(fn):
-        if name in _registry:
-            _registry[name].stream_handler = fn
-        return fn
-    return decorator
-
-
-def get_tool(name: str) -> ToolDef | None:
-    return _registry.get(name)
-
-
-def all_tools() -> list[ToolDef]:
-    return list(_registry.values())
-
-
-def build_tool_schemas(available: list[str]) -> list[dict]:
-    """Build API-ready tool schema dicts for the given tool names."""
-    return [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-        for t in _registry.values()
-        if t.name in available
-    ]
 
 CONNECT_DATASOURCE_TOOL = {
     "name": "connect_new_datasource",
@@ -272,18 +220,3 @@ async def handle_publish_or_preview(session: ChatSession, tc_input: dict) -> str
 
     return f"Published successfully!\nView URL: {view_url}"
 
-
-async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) -> str:
-    """Dispatch a tool call by name. Returns result text."""
-    if tool_name == "memorize":
-        return await handle_memorize(session, tc_input)
-    elif tool_name == "scratchpad":
-        return await handle_scratchpad(session, tc_input)
-    elif tool_name == "recall":
-        return await handle_recall(session, tc_input)
-    elif tool_name == "connect_new_datasource":
-        return await handle_connect_datasource(session, tc_input)
-    elif tool_name == "publish_or_preview":
-        return await handle_publish_or_preview(session, tc_input)
-    else:
-        return f"Unknown tool: {tool_name}"

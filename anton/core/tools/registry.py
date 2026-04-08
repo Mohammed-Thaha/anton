@@ -18,11 +18,17 @@ class ToolRegistry:
         """
         self._tools.append(tool_def)
 
-    def dispatch_tool(self, tool_name: str, tc_input: dict) -> str:
+    async def dispatch_tool(self, tool_name: str, tc_input: dict) -> str:
         """
         Dispatch a tool call by name. Returns result text.
         """
         tool_def = next((tool for tool in self._tools if tool.name == tool_name), None)
         if tool_def is None:
             raise ValueError(f"Tool {tool_name} not found")
-        return tool_def.handler(tc_input)
+        return await tool_def.handler(tc_input)
+
+    def dump(self) -> list[dict]:
+        """
+        Dump the registry as a list of tool definitions.
+        """
+        return [tool.model_dump() for tool in self._tools]

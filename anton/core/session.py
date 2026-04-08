@@ -15,16 +15,8 @@ from anton.llm.provider import (
     StreamToolResult,
 )
 from anton.scratchpad import ScratchpadManager
-from anton.tools import (
-    CONNECT_DATASOURCE_TOOL,
-    MEMORIZE_TOOL,
-    PUBLISH_TOOL,
-    RECALL_TOOL,
-    SCRATCHPAD_TOOL,
-    dispatch_tool,
-    format_cell_result,
-    prepare_scratchpad_exec,
-)
+from anton.core.tools.registry import ToolRegistry
+from anton.core.tools.tool_defs import SCRATCHPAD_TOOL, MEMORIZE_TOOL, RECALL_TOOL, ToolDef
 
 from anton.utils.datasources import (
     build_datasource_context,
@@ -109,6 +101,7 @@ class ChatSession:
         history_store: HistoryStore | None = None,
         session_id: str | None = None,
         proactive_dashboards: bool = False,
+        tools: list[ToolDef] | None = None,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -116,6 +109,7 @@ class ChatSession:
         self._episodic = episodic
         self._runtime_context = runtime_context
         self._proactive_dashboards = proactive_dashboards
+        self._extra_tools = tools
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = list(initial_history) if initial_history else []
@@ -137,6 +131,7 @@ class ChatSession:
             coding_base_url=coding_base_url,
             workspace_path=workspace.base if workspace else None,
         )
+        self.tool_registry = ToolRegistry()
 
     @property
     def history(self) -> list[dict]:
@@ -270,7 +265,13 @@ class ChatSession:
     }
 
     def _build_tools(self) -> list[dict]:
-        scratchpad_tool = dict(SCRATCHPAD_TOOL)
+        self._build_core_tools()
+        for tool in self._extra_tools:
+            self.tool_registry.register_tool(tool)
+        return self.tool_registry.dump()
+
+    def _build_core_tools(self) -> None:
+        scratchpad_tool = SCRATCHPAD_TOOL
         pkg_list = self._scratchpads._available_packages
         if pkg_list:
             notable = sorted(p for p in pkg_list if p.lower() in self._NOTABLE_PACKAGES)
@@ -279,29 +280,21 @@ class ChatSession:
                 extra = f"\n\nInstalled packages ({len(pkg_list)} total, notable: {pkg_line})."
             else:
                 extra = f"\n\nInstalled packages: {len(pkg_list)} total (standard library plus dependencies)."
-            scratchpad_tool["description"] = SCRATCHPAD_TOOL["description"] + extra
+            scratchpad_tool.description = scratchpad_tool.description + extra
 
         # Inject scratchpad wisdom from memory (procedural priming)
         if self._cortex is not None:
             wisdom = self._cortex.get_scratchpad_context()
             if wisdom:
-                scratchpad_tool[
-                    "description"
-                ] += f"\n\nLessons from past sessions:\n{wisdom}"
+                scratchpad_tool.description += f"\n\nLessons from past sessions:\n{wisdom}"
 
-        tools = [scratchpad_tool]
-        if self._cortex is not None:
-            tools.append(MEMORIZE_TOOL)
-        elif self._self_awareness is not None:
-            # Legacy fallback
-            from anton.tools import MEMORIZE_TOOL as _MT
+        self.tool_registry.register_tool(scratchpad_tool)
 
-            tools.append(_MT)
+        if self._cortex is not None or self._self_awareness is not None:
+            self.tool_registry.register_tool(MEMORIZE_TOOL)
+
         if self._episodic is not None and self._episodic.enabled:
-            tools.append(RECALL_TOOL)
-        tools.append(CONNECT_DATASOURCE_TOOL)
-        tools.append(PUBLISH_TOOL)
-        return tools
+            self.tool_registry.register_tool(RECALL_TOOL)
 
     async def close(self) -> None:
         """Clean up scratchpads and other resources."""
@@ -496,7 +489,7 @@ class ChatSession:
             tool_results: list[dict] = []
             for tc in response.tool_calls:
                 try:
-                    result_text = await dispatch_tool(self, tc.name, tc.input)
+                    result_text = await self.tool_registry.dispatch_tool(tc.name, tc.input)
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
@@ -875,7 +868,7 @@ class ChatSession:
                             )
                             if self._escape_watcher:
                                 self._escape_watcher.pause()
-                            result_text = await dispatch_tool(self, tc.name, tc.input)
+                            result_text = await self.tool_registry.dispatch_tool(tc.name, tc.input)
                             if self._escape_watcher:
                                 self._escape_watcher.resume()
                             yield StreamTaskProgress(
@@ -883,7 +876,7 @@ class ChatSession:
                                 message="Analyzing results...",
                             )
                         else:
-                            result_text = await dispatch_tool(self, tc.name, tc.input)
+                            result_text = await self.tool_registry.dispatch_tool(tc.name, tc.input)
                             if (
                                 tc.name == "scratchpad"
                                 and tc.input.get("action") == "dump"
