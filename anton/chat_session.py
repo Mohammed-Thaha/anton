@@ -65,7 +65,7 @@ def rebuild_session(
     session_id: str | None = None,
 ) -> "ChatSession":
     """Rebuild LLMClient + ChatSession after settings change."""
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
     from anton.chat import ChatSession
 
     state["llm_client"] = LLMClient.from_settings(settings)

@@ -86,8 +86,8 @@ class LLMClient:
 
     @classmethod
     def from_settings(cls, settings: AntonSettings) -> LLMClient:
-        from anton.llm.anthropic import AnthropicProvider
-        from anton.llm.openai import OpenAIProvider
+        from .anthropic import AnthropicProvider
+        from .openai import OpenAIProvider
 
         providers = {
             "anthropic": lambda: AnthropicProvider(api_key=settings.anthropic_api_key),
