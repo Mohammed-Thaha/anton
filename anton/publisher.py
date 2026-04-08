@@ -140,7 +140,7 @@ def unpublish(
     publish_url: str = DEFAULT_PUBLISH_URL,
     ssl_verify: bool = True,
 ) -> dict:
-    """Delete a published report by its md5 hash.
+    """Delete a published report by its md5 hash. User is derived from the token.
 
     Returns dict with keys: deleted, md5, files_deleted
     """
