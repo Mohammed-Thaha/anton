@@ -19,6 +19,8 @@ from anton.clipboard import (
 )
 from anton.core.session import ChatSession
 from anton.llm.provider import (
+    ContextOverflowError,
+    TokenLimitExceeded,
     StreamComplete,
     StreamContextCompacted,
     StreamTaskProgress,
@@ -85,22 +87,6 @@ if TYPE_CHECKING:
     from anton.memory.episodes import EpisodicMemory
     from anton.memory.history_store import HistoryStore
     from anton.workspace import Workspace
-
-
-_MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
-_MAX_CONTINUATIONS = 3  # Max times the verification loop can restart the tool loop
-_CONTEXT_PRESSURE_THRESHOLD = 0.7  # Trigger compaction when context is 70% full
-_MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
-_RESILIENCE_NUDGE_AT = 2  # Inject resilience nudge after this many consecutive errors
-_RESILIENCE_NUDGE = (
-    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
-    "asking the user for help, try a creative workaround — different headers/user-agent, "
-    "a public API, archive.org, an alternate library, or a completely different data source. "
-    "Only involve the user if the problem truly requires something only they can provide."
-)
-
-# TODO: Is this enough for now?
-TOKEN_STATUS_CACHE_TTL = 60.0
 
 
 async def _handle_connect(
@@ -1446,30 +1432,57 @@ async def _chat_loop(
                 console.print()
                 # Cancel the turn but stay in the chat loop
                 continue
+            except (TokenLimitExceeded, ConnectionError) as exc:
+                display.abort()
+                console.print()
+                console.print(f"[anton.warning]{exc}[/]")
+                console.print()
+                choice = await prompt_or_cancel(
+                    "  (anton) Switch LLM provider, update API key, or retry?",
+                    choices=["setup", "retry", "s", "r"],
+                    choices_display="setup/retry",
+                    default="retry" if isinstance(exc, ConnectionError) else "setup",
+                )
+                if choice in ("setup", "s"):
+                    session = await handle_setup_models(
+                        console,
+                        settings,
+                        workspace,
+                        state,
+                        self_awareness,
+                        cortex,
+                        session,
+                        episodic=episodic,
+                        history_store=history_store,
+                        session_id=current_session_id,
+                    )
+                # retry or after setup — loop continues and re-sends the last message
+                continue
             except Exception as exc:
                 display.abort()
-                console.print(f"[anton.error]Error: {exc}[/]")
                 console.print()
-                err_msg = str(exc)
-                if "401" in err_msg or "403" in err_msg or "Authentication" in err_msg:
-                    if Confirm.ask(
-                        "  Would you like to set up new LLM credentials?",
-                        default=True,
-                        console=console,
-                    ):
-                        session = await handle_setup_models(
-                            console,
-                            settings,
-                            workspace,
-                            state,
-                            self_awareness,
-                            cortex,
-                            session,
-                            episodic=episodic,
-                            history_store=history_store,
-                            session_id=current_session_id,
-                        )
-                    console.print()
+                console.print(f"[anton.error]{exc}[/]")
+                console.print()
+                choice = await prompt_or_cancel(
+                    "  (anton) Switch LLM provider, or retry?",
+                    choices=["setup", "retry", "s", "r"],
+                    choices_display="setup/retry",
+                    default="retry",
+                )
+                if choice in ("setup", "s"):
+                    session = await handle_setup_models(
+                        console,
+                        settings,
+                        workspace,
+                        state,
+                        self_awareness,
+                        cortex,
+                        session,
+                        episodic=episodic,
+                        history_store=history_store,
+                        session_id=current_session_id,
+                    )
+                continue
     except KeyboardInterrupt:
         pass
 
