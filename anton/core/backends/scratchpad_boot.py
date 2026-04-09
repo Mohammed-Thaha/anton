@@ -12,6 +12,7 @@ from anton.core.backends.wire import (
 
 # Persistent namespace across cells
 namespace = {"__builtins__": __builtins__}
+namespace["_anton_explainability_queries"] = []
 
 # --- Inject get_llm() for LLM access from scratchpad code ---
 _scratchpad_model = os.environ.get("ANTON_SCRATCHPAD_MODEL", "")
@@ -270,6 +271,7 @@ if _scratchpad_model:
 _minds_datasource = os.environ.get("ANTON_MINDS_DATASOURCE", "")
 _minds_api_key = os.environ.get("ANTON_MINDS_API_KEY", "")
 _minds_url = os.environ.get("ANTON_MINDS_URL", "")
+_minds_engine = os.environ.get("ANTON_MINDS_DATASOURCE_ENGINE", "")
 if _minds_datasource and _minds_api_key and _minds_url:
     try:
         import ssl as _minds_ssl
@@ -305,13 +307,28 @@ if _minds_datasource and _minds_api_key and _minds_url:
 
             try:
                 with _minds_urllib.urlopen(req, context=ctx, timeout=60) as resp:
-                    return json.loads(resp.read().decode())
+                    parsed = json.loads(resp.read().decode())
+                    namespace.setdefault("_anton_explainability_queries", []).append({
+                        "datasource": ds,
+                        "sql": query,
+                        "engine": _minds_engine or None,
+                        "status": "ok",
+                        "error_message": None,
+                    })
+                    return parsed
             except _minds_urllib.HTTPError as e:
                 body = ""
                 try:
                     body = e.read().decode()
                 except Exception:
                     pass
+                namespace.setdefault("_anton_explainability_queries", []).append({
+                    "datasource": ds,
+                    "sql": query,
+                    "engine": _minds_engine or None,
+                    "status": "error",
+                    "error_message": f"HTTP {e.code}: {body or e.reason}",
+                })
                 return {
                     "type": "error",
                     "data": None,
@@ -319,6 +336,13 @@ if _minds_datasource and _minds_api_key and _minds_url:
                     "error_message": f"HTTP {e.code}: {body or e.reason}",
                 }
             except Exception as e:
+                namespace.setdefault("_anton_explainability_queries", []).append({
+                    "datasource": ds,
+                    "sql": query,
+                    "engine": _minds_engine or None,
+                    "status": "error",
+                    "error_message": str(e),
+                })
                 return {
                     "type": "error",
                     "data": None,
@@ -612,6 +636,7 @@ while True:
     err_buf = io.StringIO()
     log_buf = io.StringIO()
     error = None
+    namespace["_anton_explainability_queries"] = []
     _cell_log_handler.buf = log_buf
 
     sys.stdout = out_buf
@@ -684,6 +709,7 @@ while True:
         "stderr": err_buf.getvalue(),
         "logs": log_buf.getvalue(),
         "error": error,
+        "explainability_queries": list(namespace.get("_anton_explainability_queries", [])),
     }
     if _auto_installed:
         result["auto_installed"] = _auto_installed
