@@ -15,8 +15,8 @@ from anton.core.tools.tool_defs import MEMORIZE_TOOL
 from anton.context.self_awareness import SelfAwarenessContext
 from anton.core.llm.provider import LLMResponse, ToolCall, Usage
 from anton.workspace import Workspace
-from anton.memory.cortex import Cortex
-from anton.memory.hippocampus import Hippocampus
+from anton.core.memory.cortex import Cortex
+from anton.core.memory.hippocampus import Hippocampus
 
 
 def _text_response(text: str) -> LLMResponse:
