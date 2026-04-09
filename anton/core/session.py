@@ -24,6 +24,22 @@ from anton.utils.datasources import (
     build_datasource_context,
     scrub_credentials,
 )
+from anton.core.settings import CoreSettings as _CoreSettings
+
+_s = _CoreSettings()
+MAX_TOOL_ROUNDS = _s.max_tool_rounds
+MAX_CONTINUATIONS = _s.max_continuations
+CONTEXT_PRESSURE_THRESHOLD = _s.context_pressure_threshold
+MAX_CONSECUTIVE_ERRORS = _s.max_consecutive_errors
+RESILIENCE_NUDGE_AT = _s.resilience_nudge_at
+TOKEN_STATUS_CACHE_TTL = _s.token_status_cache_ttl
+
+RESILIENCE_NUDGE = (
+    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
+    "asking the user for help, try a creative workaround — different headers/user-agent, "
+    "a public API, archive.org, an alternate library, or a completely different data source. "
+    "Only involve the user if the problem truly requires something only they can provide."
+)
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -34,23 +50,6 @@ if TYPE_CHECKING:
     from anton.memory.episodes import EpisodicMemory
     from anton.memory.history_store import HistoryStore
     from anton.workspace import Workspace
-
-
-# TODO: Move to settings?
-_MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
-_MAX_CONTINUATIONS = 3  # Max times the verification loop can restart the tool loop
-_CONTEXT_PRESSURE_THRESHOLD = 0.7  # Trigger compaction when context is 70% full
-_MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
-_RESILIENCE_NUDGE_AT = 2  # Inject resilience nudge after this many consecutive errors
-_RESILIENCE_NUDGE = (
-    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
-    "asking the user for help, try a creative workaround — different headers/user-agent, "
-    "a public API, archive.org, an alternate library, or a completely different data source. "
-    "Only involve the user if the problem truly requires something only they can provide."
-)
-
-# TODO: Is this enough for now?
-TOKEN_STATUS_CACHE_TTL = 60.0
 
 
 def _apply_error_tracking(
@@ -71,13 +70,13 @@ def _apply_error_tracking(
         resilience_nudged.discard(tool_name)
 
     streak = error_streak.get(tool_name, 0)
-    if streak >= _RESILIENCE_NUDGE_AT and tool_name not in resilience_nudged:
-        result_text += _RESILIENCE_NUDGE
+    if streak >= RESILIENCE_NUDGE_AT and tool_name not in resilience_nudged:
+        result_text += RESILIENCE_NUDGE
         resilience_nudged.add(tool_name)
 
-    if streak >= _MAX_CONSECUTIVE_ERRORS:
+    if streak >= MAX_CONSECUTIVE_ERRORS:
         result_text += (
-            f"\n\nSYSTEM: The '{tool_name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
+            f"\n\nSYSTEM: The '{tool_name}' tool has failed {MAX_CONSECUTIVE_ERRORS} times "
             "in a row. Stop retrying this approach. Either try a completely different "
             "strategy or tell the user what's going wrong so they can help."
         )
@@ -452,7 +451,7 @@ class ChatSession:
             )
 
         # Proactive compaction
-        if response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+        if response.usage.context_pressure > CONTEXT_PRESSURE_THRESHOLD:
             await self._summarize_history()
             self._compact_scratchpads()
 
@@ -463,7 +462,7 @@ class ChatSession:
 
         while response.tool_calls:
             tool_round += 1
-            if tool_round > _MAX_TOOL_ROUNDS:
+            if tool_round > MAX_TOOL_ROUNDS:
                 self._history.append(
                     {"role": "assistant", "content": response.content or ""}
                 )
@@ -471,7 +470,7 @@ class ChatSession:
                     {
                         "role": "user",
                         "content": (
-                            f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                            f"SYSTEM: You have used {MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
                             "Pause here. Summarize what you have accomplished so far and what remains. "
                             "If you believe you are on a good track and can finish the task with more steps, "
                             "tell the user and ask if they'd like you to continue. "
@@ -545,7 +544,7 @@ class ChatSession:
                 )
 
             # Proactive compaction during tool loop
-            if response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+            if response.usage.context_pressure > CONTEXT_PRESSURE_THRESHOLD:
                 await self._summarize_history()
                 self._compact_scratchpads()
 
@@ -746,7 +745,7 @@ class ChatSession:
         # Proactive compaction
         if (
             not _compacted_this_turn
-            and llm_response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD
+            and llm_response.usage.context_pressure > CONTEXT_PRESSURE_THRESHOLD
         ):
             await self._summarize_history()
             self._compact_scratchpads()
@@ -768,7 +767,7 @@ class ChatSession:
 
             while llm_response.tool_calls:
                 tool_round += 1
-                if tool_round > _MAX_TOOL_ROUNDS:
+                if tool_round > MAX_TOOL_ROUNDS:
                     _max_rounds_hit = True
                     self._history.append(
                         {"role": "assistant", "content": llm_response.content or ""}
@@ -777,7 +776,7 @@ class ChatSession:
                         {
                             "role": "user",
                             "content": (
-                                f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                                f"SYSTEM: You have used {MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
                                 "Pause here. Summarize what you have accomplished so far and what remains. "
                                 "If you believe you are on a good track and can finish the task with more steps, "
                                 "tell the user and ask if they'd like you to continue. "
@@ -1022,7 +1021,7 @@ class ChatSession:
                 if (
                     not _compacted_this_turn
                     and llm_response.usage.context_pressure
-                    > _CONTEXT_PRESSURE_THRESHOLD
+                    > CONTEXT_PRESSURE_THRESHOLD
                 ):
                     await self._summarize_history()
                     self._compact_scratchpads()
@@ -1041,7 +1040,7 @@ class ChatSession:
             reply = llm_response.content or ""
             self._history.append({"role": "assistant", "content": reply})
 
-            if continuation >= _MAX_CONTINUATIONS:
+            if continuation >= MAX_CONTINUATIONS:
                 # Budget exhausted — ask LLM to diagnose and present to user
                 self._history.append(
                     {
@@ -1134,7 +1133,7 @@ class ChatSession:
                     "role": "user",
                     "content": (
                         f"SYSTEM: Task verification determined this task is not yet complete "
-                        f"(attempt {continuation}/{_MAX_CONTINUATIONS}).\n"
+                        f"(attempt {continuation}/{MAX_CONTINUATIONS}).\n"
                         f"Verifier assessment: {reason}\n\n"
                         "Continue working on the original request. Pick up where you left off "
                         "and finish the remaining work. Do not repeat work already done."
@@ -1143,7 +1142,7 @@ class ChatSession:
             )
             yield StreamTaskProgress(
                 phase="analyzing",
-                message=f"Task incomplete — continuing ({continuation}/{_MAX_CONTINUATIONS})...",
+                message=f"Task incomplete — continuing ({continuation}/{MAX_CONTINUATIONS})...",
             )
 
             # Re-enter tool loop: get next LLM response with tools available
