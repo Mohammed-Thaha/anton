@@ -95,13 +95,23 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
 
     if status == "test_failed":
         return (
-            f"CONNECTION TEST FAILED: The '{engine}' credentials were entered "
-            f"but the connection test did not succeed, and the user declined to "
-            f"re-enter them. The connection was NOT saved. Ask the user what "
-            f"they'd like to do — for example, double-check the host/credentials, "
-            f"try a different datasource, or do something else. "
-            f"Do NOT silently retry connect_new_datasource with the same values. "
-            f"Respond with TEXT ONLY — no tool calls."
+            f"CONNECTION TEST FAILED: The connection test for '{engine}' did not "
+            f"succeed and the user declined to re-enter credentials. Nothing was "
+            f"saved.\n\n"
+            f"You have exactly TWO mutually exclusive options — pick ONE, do NOT "
+            f"mix them:\n\n"
+            f"OPTION A — Retry silently (only if you suspect a transient issue "
+            f"like a network glitch or first-connection cold start):\n"
+            f"  Emit ZERO text in your response. Output ONLY a tool_use block "
+            f"calling connect_new_datasource again with the same known_variables. "
+            f"The user will only see the final result — clean and uncluttered.\n\n"
+            f"OPTION B — Give up and troubleshoot (if you believe the failure is "
+            f"real — bad credentials, wrong host, firewall, etc.):\n"
+            f"  Respond with TEXT ONLY, NO tool calls. Briefly explain what "
+            f"likely went wrong and ask the user what to do.\n\n"
+            f"CRITICAL: Mixing text + a retry tool call in the same response "
+            f"produces a confusing two-message stack for the user (failure text "
+            f"followed by success text). Pick A or B, never both."
         )
 
     # Default: user cancelled (pressed Escape) at some point
