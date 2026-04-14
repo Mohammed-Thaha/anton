@@ -682,3 +682,24 @@ class LocalScratchpadRuntime(ScratchpadRuntime):
                     pass
         else:
             self._proc.kill()
+
+
+def local_scratchpad_runtime_factory(
+    *,
+    name: str,
+    cells: list[Cell] | None,
+    coding_provider: str,
+    coding_model: str,
+    coding_api_key: str,
+    coding_base_url: str,
+    workspace_path: Path | None,
+) -> ScratchpadRuntime:
+    return LocalScratchpadRuntime(
+        name=name,
+        cells=cells,
+        coding_provider=coding_provider,
+        coding_model=coding_model,
+        coding_api_key=coding_api_key,
+        coding_base_url=coding_base_url,
+        workspace_path=workspace_path,
+    )

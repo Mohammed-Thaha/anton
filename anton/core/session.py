@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from anton.core.backends.base import Cell, ScratchpadRuntimeFactory
+from anton.core.backends.local import local_scratchpad_runtime_factory
 from anton.core.datasources.data_vault import DataVault
 from anton.core.llm.prompt_builder import ChatSystemPromptBuilder
 from anton.core.memory.cerebellum import Cerebellum
@@ -61,6 +63,8 @@ class ChatSessionConfig:
     """
 
     llm_client: LLMClient
+    runtime_factory: ScratchpadRuntimeFactory = field(default_factory=local_scratchpad_runtime_factory)
+    cells: list[Cell] | None = None
     settings: CoreSettings | None = None
     self_awareness: SelfAwarenessContext | None = None
     cortex: Cortex | None = None
@@ -117,6 +121,7 @@ class ChatSession:
         coding_provider = config.llm_client.coding_provider
         coding_conn = coding_provider.export_connection_info()
         self._scratchpads = ScratchpadManager(
+            runtime_factory=config.runtime_factory,
             coding_provider=coding_conn.provider,
             coding_model=config.llm_client.coding_model,
             coding_api_key=coding_conn.api_key or "",
