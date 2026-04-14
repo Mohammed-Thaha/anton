@@ -89,7 +89,7 @@ def rebuild_session(
         episodic=episodic,
         system_prompt_context=SystemPromptContext(
             runtime_context=runtime_context,
-            resource_storage_context=f"Save output to `{output_path}` (create it if needed).",
+            output_context=f"Save output to `{output_path}` (create it if needed).",
         ),
         workspace=workspace,
         console=console,
