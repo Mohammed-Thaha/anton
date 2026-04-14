@@ -19,22 +19,10 @@ from anton.core.backends.wire import (
     RESULT_START,
 )
 from anton.core.settings import CoreSettings
+from anton.core.backends.utils import compute_timeouts
 
 _BOOT_SCRIPT_PATH = Path(__file__).parent / "scratchpad_boot.py"
 _MAX_OUTPUT = 10_000
-
-
-def _compute_timeouts(estimated_seconds: int) -> tuple[float, float]:
-    """Compute (total_timeout, inactivity_timeout) from an estimated run time.
-
-    Reads defaults from CoreSettings so they're tunable via env vars.
-    """
-    s = CoreSettings()
-    if estimated_seconds <= 0:
-        return float(s.cell_timeout_default), float(s.cell_inactivity_timeout)
-    total = max(estimated_seconds * 2, estimated_seconds + 30)
-    inactivity = max(estimated_seconds * 0.5, 30)
-    return float(total), float(inactivity)
 
 
 class LocalScratchpadRuntime(ScratchpadRuntime):
@@ -444,7 +432,7 @@ class LocalScratchpadRuntime(ScratchpadRuntime):
         self._proc.stdin.write(payload.encode())  # type: ignore[union-attr]
         await self._proc.stdin.drain()  # type: ignore[union-attr]
 
-        total_timeout, inactivity_timeout = _compute_timeouts(estimated_seconds)
+        total_timeout, inactivity_timeout = compute_timeouts(estimated_seconds)
 
         try:
             result_data: dict | None = None
