@@ -81,11 +81,6 @@ def rebuild_session(
     refresh_knowledge(settings, cortex)
 
     runtime_context = build_runtime_context(settings)
-    api_key = (
-        settings.anthropic_api_key
-        if settings.coding_provider == "anthropic"
-        else settings.openai_api_key
-    ) or ""
     output_path = f"{settings.output_dir.rstrip('/')}/"
     return ChatSession(ChatSessionConfig(
         llm_client=state["llm_client"],
