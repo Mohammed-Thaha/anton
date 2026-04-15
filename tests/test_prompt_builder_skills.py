@@ -42,7 +42,6 @@ def _build_prompt(builder: ChatSystemPromptBuilder, **overrides) -> str:
         current_datetime="2026-04-10T12:00:00+00:00",
         system_prompt_context=SystemPromptContext(runtime_context="test runtime"),
         proactive_dashboards=False,
-        output_dir="/tmp/anton_out",
     )
     defaults.update(overrides)
     return builder.build(**defaults)

@@ -69,7 +69,6 @@ class TestPromptBuilderReceivesStore:
             current_datetime="2026-04-10",
             system_prompt_context=SystemPromptContext(runtime_context="test"),
             proactive_dashboards=False,
-            output_dir="/tmp/x",
             skill_store=store_with_one_skill,
         )
         assert "## Procedural memory" in prompt
@@ -81,7 +80,6 @@ class TestPromptBuilderReceivesStore:
             current_datetime="2026-04-10",
             system_prompt_context=SystemPromptContext(runtime_context="test"),
             proactive_dashboards=False,
-            output_dir="/tmp/x",
             skill_store=None,
         )
         assert "Procedural memory" not in prompt
