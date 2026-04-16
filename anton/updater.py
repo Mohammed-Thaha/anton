@@ -1,5 +1,5 @@
 """Auto-update check for Anton."""
-
+import re
 from __future__ import annotations
 
 import shutil
